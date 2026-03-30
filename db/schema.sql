@@ -252,6 +252,37 @@ CREATE TRIGGER set_alert_logs_updated_at
     BEFORE UPDATE ON alert_logs
     FOR EACH ROW EXECUTE FUNCTION trigger_set_updated_at();
 
+-- ---------------------------------------------------------------------------
+-- notification_preferences  (per-customer alert delivery settings)
+-- ---------------------------------------------------------------------------
+CREATE TABLE notification_preferences (
+    id                      UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id             UUID        NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    alert_type              TEXT        NOT NULL
+                                CHECK (alert_type IN (
+                                    'inventory_drop', 'inventory_discrepancy',
+                                    'moisture_high', 'moisture_low',
+                                    'temperature_anomaly', 'humidity_anomaly',
+                                    'camera_offline', 'sensor_offline',
+                                    'all'
+                                )),
+    severity_threshold      TEXT        NOT NULL DEFAULT 'warning'
+                                CHECK (severity_threshold IN ('info', 'warning', 'critical')),
+    email_enabled           BOOLEAN     NOT NULL DEFAULT TRUE,
+    sms_enabled             BOOLEAN     NOT NULL DEFAULT FALSE,
+    email_addresses         TEXT[]      NOT NULL DEFAULT '{}',
+    phone_numbers           TEXT[]      NOT NULL DEFAULT '{}',
+    quiet_hours_start       TIME,                       -- local time, e.g. 22:00
+    quiet_hours_end         TIME,                       -- local time, e.g. 07:00
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (customer_id, alert_type)
+);
+
+CREATE TRIGGER set_notification_prefs_updated_at
+    BEFORE UPDATE ON notification_preferences
+    FOR EACH ROW EXECUTE FUNCTION trigger_set_updated_at();
+
 -- =============================================================================
 -- INDEXES
 -- =============================================================================
@@ -353,6 +384,9 @@ CREATE INDEX idx_sensor_customer_sensor_time
 CREATE INDEX idx_sensor_customer_site_type_time
     ON sensor_readings (customer_id, site_id, sensor_type, time DESC);
 
+-- notification_preferences
+CREATE INDEX idx_notif_prefs_customer   ON notification_preferences (customer_id);
+
 -- alert_logs
 CREATE INDEX idx_alerts_customer        ON alert_logs (customer_id, created_at DESC);
 CREATE INDEX idx_alerts_site            ON alert_logs (site_id,     created_at DESC);
@@ -370,7 +404,8 @@ ALTER TABLE piles               ENABLE ROW LEVEL SECURITY;
 ALTER TABLE inventory_snapshots ENABLE ROW LEVEL SECURITY;
 ALTER TABLE moisture_readings   ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sensor_readings     ENABLE ROW LEVEL SECURITY;
-ALTER TABLE alert_logs          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE alert_logs                ENABLE ROW LEVEL SECURITY;
+ALTER TABLE notification_preferences  ENABLE ROW LEVEL SECURITY;
 
 -- Application role: api_user — set customer_id on the session before any query:
 --   SET app.current_customer_id = '<uuid>';
@@ -394,6 +429,9 @@ CREATE POLICY tenant_isolation ON sensor_readings
     USING (customer_id = current_setting('app.current_customer_id')::UUID);
 
 CREATE POLICY tenant_isolation ON alert_logs
+    USING (customer_id = current_setting('app.current_customer_id')::UUID);
+
+CREATE POLICY tenant_isolation ON notification_preferences
     USING (customer_id = current_setting('app.current_customer_id')::UUID);
 
 -- =============================================================================
