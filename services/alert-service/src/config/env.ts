@@ -36,6 +36,23 @@ const envSchema = z.object({
   KAFKA_HEARTBEAT_INTERVAL_MS: z.coerce.number().int().min(100).default(3_000),
   KAFKA_MAX_WAIT_MS:           z.coerce.number().int().min(0).default(500),
 
+  // ── Notifications (master switch) ─────────────────────────────────────────
+  // Set to "false" to use no-op channels for all providers.
+  NOTIFICATIONS_ENABLED: z.string().transform((v) => v !== "false").default("true"),
+
+  // ── SendGrid (email) ───────────────────────────────────────────────────────
+  // Required when NOTIFICATIONS_ENABLED=true.  Omit in dev to use no-op channel.
+  SENDGRID_API_KEY:    z.string().min(1).optional(),
+  SENDGRID_FROM_EMAIL: z.string().email().default("alerts@warehouse-platform.io"),
+  SENDGRID_FROM_NAME:  z.string().default("Warehouse Platform Alerts"),
+
+  // ── Twilio (SMS) ───────────────────────────────────────────────────────────
+  // Required when NOTIFICATIONS_ENABLED=true.  Omit in dev to use no-op channel.
+  TWILIO_ACCOUNT_SID:  z.string().min(1).optional(),
+  TWILIO_AUTH_TOKEN:   z.string().min(1).optional(),
+  // E.164 format: +15551234567  OR  a Twilio Messaging Service SID (MGxxx…)
+  TWILIO_FROM_NUMBER:  z.string().default("+15550000000"),
+
   // ── Logging ────────────────────────────────────────────────────────────────
   LOG_LEVEL: z.enum(["error", "warn", "info", "http", "debug"]).default("info"),
 });

@@ -23,14 +23,45 @@ import { pool, closePool } from "./config/database";
 import { createApp }  from "./app";
 import { createConsumer } from "./kafka/consumer";
 import { createMessageHandler } from "./kafka/handler";
+import { SendGridEmailChannel, NoopEmailChannel } from "./notifications/channels/email";
+import { TwilioSmsChannel, NoopSmsChannel } from "./notifications/channels/sms";
+import { createNotificationRouter } from "./notifications/router";
 import { AlertRepository } from "./repositories/alertRepository";
+import { NotificationPreferenceRepository } from "./repositories/notificationPreferenceRepository";
+import { NotificationLogRepository } from "./repositories/notificationLogRepository";
 
 // ---------------------------------------------------------------------------
 // Dependency container
 // ---------------------------------------------------------------------------
 
-const alertRepo = new AlertRepository(pool);
-const consumer  = createConsumer();
+const alertRepo      = new AlertRepository(pool);
+const preferenceRepo = new NotificationPreferenceRepository(pool);
+const logRepo        = new NotificationLogRepository(pool);
+
+// Notification channels — use real providers when credentials are present and
+// NOTIFICATIONS_ENABLED=true; fall back to no-op channels otherwise.
+const emailChannel = env.NOTIFICATIONS_ENABLED && env.SENDGRID_API_KEY
+  ? new SendGridEmailChannel()
+  : new NoopEmailChannel();
+
+const smsChannel = env.NOTIFICATIONS_ENABLED && env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN
+  ? new TwilioSmsChannel()
+  : new NoopSmsChannel();
+
+const notificationRouter = createNotificationRouter(
+  preferenceRepo,
+  logRepo,
+  emailChannel,
+  smsChannel,
+);
+
+logger.info("Notification channels configured", {
+  email:         env.NOTIFICATIONS_ENABLED && env.SENDGRID_API_KEY  ? "sendgrid" : "noop",
+  sms:           env.NOTIFICATIONS_ENABLED && env.TWILIO_ACCOUNT_SID ? "twilio"  : "noop",
+  notifications: env.NOTIFICATIONS_ENABLED,
+});
+
+const consumer = createConsumer();
 
 // ---------------------------------------------------------------------------
 // Kafka setup
@@ -38,7 +69,7 @@ const consumer  = createConsumer();
 
 // Register the handler before start() so no messages are missed during the
 // window between subscribe() and run() inside start().
-consumer.onMessage(createMessageHandler(alertRepo));
+consumer.onMessage(createMessageHandler(alertRepo, notificationRouter));
 
 consumer.start().catch((err: unknown) => {
   logger.error("Failed to start Kafka consumer", {

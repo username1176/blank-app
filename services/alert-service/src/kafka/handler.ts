@@ -15,6 +15,7 @@
 import { EachMessagePayload } from "kafkajs";
 import { logger } from "../config/logger";
 import { AlertRepository } from "../repositories/alertRepository";
+import { NotificationRouter } from "../notifications/router";
 import { AlertPayload, alertPayloadSchema, headerToString } from "../types/alert";
 
 // ---------------------------------------------------------------------------
@@ -36,14 +37,15 @@ export function getHandlerStats(): { received: number; accepted: number; rejecte
 /**
  * Returns a bound message handler.
  *
- * Accepts the AlertRepository as a constructor parameter — this is the
- * primary dependency injection point for the consumer pipeline.  In tests
- * you can pass a mock repository without touching any global state.
- *
- * @param alertRepo  Repository used to persist consumed alerts.
+ * @param alertRepo          Repository used to persist consumed alerts.
+ * @param notificationRouter Optional router — when provided, a fire-and-forget
+ *                           notification dispatch is triggered after each
+ *                           successful persist.  Omit to process alerts without
+ *                           sending notifications (useful in test envs).
  */
 export function createMessageHandler(
-  alertRepo: AlertRepository,
+  alertRepo:            AlertRepository,
+  notificationRouter:   NotificationRouter | null = null,
 ): (payload: EachMessagePayload) => Promise<void> {
 
   return async function handleMessage(
@@ -130,6 +132,19 @@ export function createMessageHandler(
         offset:     message.offset,
         partition,
       });
+
+      // ── 5. Route notifications ──────────────────────────────────────────────
+      // Fire-and-forget: notification delivery must never delay offset commit
+      // or block the consumer from processing the next message.
+      if (notificationRouter) {
+        notificationRouter.route(payload, source).catch((err: unknown) => {
+          logger.error("Kafka: notification routing threw unexpectedly", {
+            alertId:    payload.id,
+            customerId: payload.customerId,
+            error:      err instanceof Error ? err.message : String(err),
+          });
+        });
+      }
     } catch (err) {
       _rejected++;
       logger.error("Kafka: failed to persist alert", {
