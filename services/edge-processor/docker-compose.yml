@@ -39,6 +39,12 @@ services:
       # Bind-mount for debug frames (optional — only active when DEBUG_FRAME_DIR is set)
       - debug_frames:/tmp/debug_frames
 
+    # Management API port — restrict access at the firewall level so only
+    # authorised hosts on the local network can reach it.
+    # Commented out when using network_mode: host (port is exposed on host directly).
+    # ports:
+    #   - "8080:8080"
+
     # Host networking gives the container direct access to LAN cameras.
     # On Jetson, this also exposes /dev/video* device nodes within the network
     # namespace.  Comment out if your cameras are accessible via Docker bridge.

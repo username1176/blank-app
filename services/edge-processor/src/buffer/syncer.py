@@ -101,6 +101,23 @@ class BufferSyncer:
 
     # ── Public ────────────────────────────────────────────────────────────────
 
+    async def check_connectivity(self) -> dict[str, Optional[bool]]:
+        """
+        Probe both services and return a reachability dict.
+
+        Values are True (up), False (down), or None if the check itself
+        failed unexpectedly.
+        """
+        moisture_up, inventory_up = await asyncio.gather(
+            self._is_reachable(self._moisture,  "moisture-service"),
+            self._is_reachable(self._inventory, "inventory-service"),
+            return_exceptions=True,
+        )
+        return {
+            "moisture_service":  moisture_up  if isinstance(moisture_up,  bool) else None,
+            "inventory_service": inventory_up if isinstance(inventory_up, bool) else None,
+        }
+
     async def sync_pending(self) -> SyncResult:
         """
         Run one sync pass.  Safe to call from any async context — never raises.

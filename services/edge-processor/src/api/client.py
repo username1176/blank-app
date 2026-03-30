@@ -43,6 +43,14 @@ class ApiClient:
             "Authorization": f"Bearer {settings.api_jwt_token}",
         }
 
+    @property
+    def base_url(self) -> str:
+        return self._base_url
+
+    @base_url.setter
+    def base_url(self, url: str) -> None:
+        self._base_url = url.rstrip("/")
+
     # ── JSON requests ─────────────────────────────────────────────────────────
 
     async def put_json(self, path: str, body: dict) -> httpx.Response:

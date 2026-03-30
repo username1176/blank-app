@@ -5,7 +5,11 @@ httpx[http2]>=0.27,<1
 pydantic-settings>=2.2,<3
 pydantic>=2.6,<3
 
-# Used for async scheduling and file I/O
+# Management REST API
+fastapi>=0.111,<1
+uvicorn[standard]>=0.29,<1
+
+# Async I/O
 anyio>=4.3,<5
 
 # Image encoding helpers

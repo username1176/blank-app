@@ -125,6 +125,23 @@ class Settings(BaseSettings):
     api_max_retries: int = Field(4, ge=0, le=10, description="Max retry attempts per request")
     api_retry_initial_delay_s: float = Field(1.0, ge=0.1, description="Initial retry backoff (seconds)")
 
+    # ── Management REST API ───────────────────────────────────────────────────
+    mgmt_api_enabled: bool = Field(True, description="Enable the local management REST API")
+    mgmt_api_host: str = Field(
+        "0.0.0.0",
+        description="Bind address for the management API server. "
+                    "Use 127.0.0.1 to restrict to loopback only.",
+    )
+    mgmt_api_port: int = Field(8080, ge=1, le=65535, description="Management API port")
+    mgmt_api_key: str = Field(
+        ...,
+        description="Secret API key required in the X-API-Key header on every request",
+    )
+    config_overrides_path: str = Field(
+        "/data/edge_config.json",
+        description="Path to the JSON file where runtime config changes are persisted",
+    )
+
     # ── Offline buffer ────────────────────────────────────────────────────────
     buffer_enabled: bool = Field(
         True,

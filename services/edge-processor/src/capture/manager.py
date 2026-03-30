@@ -8,6 +8,13 @@ frames in one call.
 V4L2 thermal cameras (USB FLIR Lepton etc.) are wired up here via a
 special path: the raw 16-bit frames are exposed directly so the thermal
 analyzer can apply its own calibration.
+
+Runtime stream restart
+----------------------
+`restart_rgb()` and `restart_thermal()` stop the current stream, rebuild
+it from the current `Settings` object, and start it again.  The management
+API uses these after updating camera URLs so changes take effect immediately
+without a full process restart.
 """
 
 from __future__ import annotations
@@ -28,9 +35,9 @@ logger = logging.getLogger(__name__)
 class CaptureResult:
     """A snapshot from both cameras at a single point in time."""
     rgb_frame: Optional[np.ndarray]         # uint8 BGR, or None
-    thermal_frame: Optional[np.ndarray]     # uint16 single-channel (raw) or float32 (°C), or None
-    rgb_timestamp: float = 0.0              # UNIX epoch
-    thermal_timestamp: float = 0.0         # UNIX epoch
+    thermal_frame: Optional[np.ndarray]     # uint16 single-channel (raw), or None
+    rgb_timestamp: float = 0.0
+    thermal_timestamp: float = 0.0
 
     @property
     def has_rgb(self) -> bool:
@@ -49,36 +56,72 @@ class StreamManager:
     """
     Creates and manages `RtspStream` instances from `Settings`.
 
-    Calling `start()` launches all enabled streams.
-    `capture()` returns the latest frames without blocking on I/O.
-    `stop()` gracefully shuts down all streams.
+    Streams are built lazily from the *current* state of the `Settings`
+    object, so changing `settings.rgb_rtsp_url` and then calling
+    `restart_rgb()` picks up the new URL without touching the thermal stream.
     """
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._rgb_stream: Optional[RtspStream] = None
         self._thermal_stream: Optional[RtspStream] = None
-        self._setup_streams()
+        self._build_all_streams()
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def start(self) -> None:
         """Start all configured streams."""
-        for stream in self._all_streams():
+        for stream in self._active_streams():
             stream.start()
         logger.info(
             "StreamManager started",
-            extra={
-                "rgb":     self._settings.has_rgb(),
-                "thermal": self._settings.has_thermal(),
-            },
+            extra={"rgb": self._settings.has_rgb(), "thermal": self._settings.has_thermal()},
         )
 
     def stop(self) -> None:
         """Stop all streams and release resources."""
-        for stream in self._all_streams():
+        for stream in self._active_streams():
             stream.stop()
         logger.info("StreamManager stopped")
+
+    # ── Per-stream restart (called by management API on URL change) ────────────
+
+    def restart_rgb(self) -> None:
+        """
+        Stop the current RGB stream, rebuild it from the current settings,
+        and start it again.  No-op if no RGB source is configured.
+        """
+        if self._rgb_stream:
+            self._rgb_stream.stop()
+        self._rgb_stream = self._build_rgb_stream()
+        if self._rgb_stream:
+            self._rgb_stream.start()
+            logger.info(
+                "RGB stream restarted",
+                extra={"url": self._settings.rgb_rtsp_url},
+            )
+        else:
+            logger.info("RGB stream disabled (no URL configured)")
+
+    def restart_thermal(self) -> None:
+        """
+        Stop the current thermal stream, rebuild it from the current settings,
+        and start it again.  No-op if no thermal source is configured.
+        """
+        if self._thermal_stream:
+            self._thermal_stream.stop()
+        self._thermal_stream = self._build_thermal_stream()
+        if self._thermal_stream:
+            self._thermal_stream.start()
+            logger.info(
+                "Thermal stream restarted",
+                extra={
+                    "url":    self._settings.thermal_rtsp_url,
+                    "v4l2":   self._settings.thermal_v4l2_device,
+                },
+            )
+        else:
+            logger.info("Thermal stream disabled (no source configured)")
 
     # ── Capture ───────────────────────────────────────────────────────────────
 
@@ -86,18 +129,16 @@ class StreamManager:
         """
         Return the most-recent frames from both cameras.
 
-        Never blocks — if a stream has no frame yet (e.g. still connecting),
-        the corresponding field is None.
+        Never blocks — if a stream has no frame yet the corresponding field
+        is None.
         """
         rgb_frame, rgb_ts = (
             self._rgb_stream.get_frame_with_timestamp()
-            if self._rgb_stream
-            else (None, 0.0)
+            if self._rgb_stream else (None, 0.0)
         )
         thermal_frame, thermal_ts = (
             self._thermal_stream.get_frame_with_timestamp()
-            if self._thermal_stream
-            else (None, 0.0)
+            if self._thermal_stream else (None, 0.0)
         )
         return CaptureResult(
             rgb_frame=rgb_frame,
@@ -134,53 +175,47 @@ class StreamManager:
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
-    def _setup_streams(self) -> None:
+    def _build_all_streams(self) -> None:
+        self._rgb_stream     = self._build_rgb_stream()
+        self._thermal_stream = self._build_thermal_stream()
+
+    def _build_rgb_stream(self) -> Optional[RtspStream]:
         s = self._settings
+        if not s.has_rgb() or not s.rgb_rtsp_url:
+            return None
+        return RtspStream(
+            name="rgb",
+            url=s.rgb_rtsp_url,
+            use_gstreamer=s.use_gstreamer,
+            gst_codec="h264",
+            target_fps=s.rgb_target_fps,
+            reconnect_delay_s=s.stream_reconnect_delay_s,
+            is_16bit=False,
+        )
 
-        if s.has_rgb() and s.rgb_rtsp_url:
-            self._rgb_stream = RtspStream(
-                name="rgb",
-                url=s.rgb_rtsp_url,
-                use_gstreamer=s.use_gstreamer,
-                gst_codec="h264",
-                target_fps=s.rgb_target_fps,
+    def _build_thermal_stream(self) -> Optional[RtspStream]:
+        s = self._settings
+        if not s.has_thermal():
+            return None
+        if s.thermal_rtsp_url:
+            return RtspStream(
+                name="thermal-rtsp",
+                url=s.thermal_rtsp_url,
+                use_gstreamer=False,
+                target_fps=s.thermal_target_fps,
                 reconnect_delay_s=s.stream_reconnect_delay_s,
-                is_16bit=False,
+                is_16bit=True,
             )
+        if s.thermal_v4l2_device:
+            return RtspStream(
+                name="thermal-v4l2",
+                url=f"v4l2://{s.thermal_v4l2_device}",
+                use_gstreamer=s.use_gstreamer,
+                target_fps=s.thermal_target_fps,
+                reconnect_delay_s=s.stream_reconnect_delay_s,
+                is_16bit=True,
+            )
+        return None
 
-        if s.has_thermal():
-            if s.thermal_rtsp_url:
-                # IP thermal camera via RTSP (FLIR AX8, Axis Q, etc.)
-                # Most RTSP thermal cameras stream MJPEG or H.264-encoded thermal images;
-                # the raw pixel values encode temperature data.
-                self._thermal_stream = RtspStream(
-                    name="thermal-rtsp",
-                    url=s.thermal_rtsp_url,
-                    # IP thermal cameras typically don't benefit from nvv4l2decoder
-                    # (many stream MJPEG, not H.264).  Keep GStreamer off unless
-                    # the operator explicitly knows their camera supports it.
-                    use_gstreamer=False,
-                    target_fps=s.thermal_target_fps,
-                    reconnect_delay_s=s.stream_reconnect_delay_s,
-                    is_16bit=True,
-                )
-            elif s.thermal_v4l2_device:
-                # USB thermal camera (FLIR Lepton on PureThermal, etc.)
-                # V4L2 URL convention: prepend v4l2://
-                v4l2_url = f"v4l2://{s.thermal_v4l2_device}"
-                self._thermal_stream = RtspStream(
-                    name="thermal-v4l2",
-                    url=v4l2_url,
-                    use_gstreamer=s.use_gstreamer,
-                    target_fps=s.thermal_target_fps,
-                    reconnect_delay_s=s.stream_reconnect_delay_s,
-                    is_16bit=True,
-                )
-
-    def _all_streams(self) -> list[RtspStream]:
-        streams = []
-        if self._rgb_stream:
-            streams.append(self._rgb_stream)
-        if self._thermal_stream:
-            streams.append(self._thermal_stream)
-        return streams
+    def _active_streams(self) -> list[RtspStream]:
+        return [s for s in (self._rgb_stream, self._thermal_stream) if s is not None]

@@ -56,7 +56,9 @@ RUN pip install --no-cache-dir \
         anyio \
         Pillow \
         python-json-logger \
-        numpy
+        numpy \
+        "fastapi>=0.111,<1" \
+        "uvicorn[standard]>=0.29,<1"
 
 # Conditionally install OpenCV via pip (skip on Jetson).
 RUN if [ "${INSTALL_OPENCV_PIP}" = "1" ]; then \
