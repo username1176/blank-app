@@ -12,6 +12,7 @@ PredictionResult: Dataclass returned by ModelRegistry.predict().
 
 from src.model.config import ModelConfig
 from src.model.predictor import ModelOutput, MoisturePredictor
+from src.model.preprocessing import SensorReadingInput, preprocess_thermal_image
 from src.model.registry import PredictionResult, model_registry
 
 __all__ = [
@@ -19,5 +20,7 @@ __all__ = [
     "ModelOutput",
     "MoisturePredictor",
     "PredictionResult",
+    "SensorReadingInput",
     "model_registry",
+    "preprocess_thermal_image",
 ]

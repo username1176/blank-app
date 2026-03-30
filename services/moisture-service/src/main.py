@@ -21,6 +21,7 @@ from src.config import get_settings
 from src.db import close_pool, create_pool
 from src.logger import configure_logging, get_logger
 from src.routes.health import router as health_router
+from src.routes.predict import router as predict_router
 
 log = get_logger(__name__)
 
@@ -109,6 +110,7 @@ def create_app() -> FastAPI:
 
     # ── Routers ───────────────────────────────────────────────────────────────
     app.include_router(health_router)
+    app.include_router(predict_router)
 
     return app
 
