@@ -57,15 +57,19 @@ export function createServiceProxy(opts: ServiceProxyOptions): RequestHandler {
         // Paranoia: strip any remaining spoofed identity headers.
         proxyReq.removeHeader("x-customer-id");
         proxyReq.removeHeader("x-user-id");
+        proxyReq.removeHeader("x-site-ids");
 
-        // Re-inject verified identity from locals (set by authenticate.ts).
+        // Re-inject verified tenant context from res.locals (set by authenticate.ts).
         const auth = (expressReq.res?.locals as Record<string, unknown>)?.["auth"] as
-          | { customerId: string; userId: string }
+          | { customerId: string; userId: string; siteIds: string[] }
           | undefined;
 
         if (auth) {
           proxyReq.setHeader("X-Customer-Id", auth.customerId);
           proxyReq.setHeader("X-User-Id",     auth.userId);
+          if (auth.siteIds.length > 0) {
+            proxyReq.setHeader("X-Site-Ids", auth.siteIds.join(","));
+          }
         }
 
         // Ensure request ID is forwarded.

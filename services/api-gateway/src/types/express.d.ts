@@ -13,6 +13,8 @@ declare global {
       auth?: {
         customerId: string;
         userId:     string;
+        /** Site IDs the customer is authorised for (from site_ids JWT claim). */
+        siteIds:    string[];
         email:      string | null;
       };
     }

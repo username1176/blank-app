@@ -18,17 +18,29 @@ const schema = z.object({
     .default("false"),
 
   // ── JWT authentication ───────────────────────────────────────────────────────
+  // Signing secret for access tokens (shared with upstream services).
   JWT_SECRET:           z.string().min(16, "JWT_SECRET must be at least 16 characters"),
+  // Separate secret for refresh tokens — can be rotated independently.
+  JWT_REFRESH_SECRET:   z.string().min(16, "JWT_REFRESH_SECRET must be at least 16 characters"),
   JWT_VERIFY_AT_GATEWAY: z
     .string()
     .toLowerCase()
     .transform((v) => v !== "false")
     .default("true"),
-  // Comma-separated path suffixes (relative to /api/<service>) that skip auth.
+  // Standard JWT duration strings, e.g. "15m", "1h", "7d".
+  JWT_ACCESS_TTL:  z.string().default("15m"),
+  JWT_REFRESH_TTL: z.string().default("7d"),
+  // Comma-separated path prefixes that bypass JWT verification.
+  // /auth/login and /auth/refresh are always public; /health/* for probes.
   JWT_PUBLIC_PATHS: z
     .string()
-    .default("/health,/health/live,/health/ready")
+    .default("/health,/auth/login,/auth/refresh")
     .transform((v) => v.split(",").map((p) => p.trim()).filter(Boolean)),
+
+  // ── Upstream auth service ────────────────────────────────────────────────────
+  // The gateway delegates credential validation to this service.
+  // It must expose POST /authenticate → { userId, customerId, siteIds, email }.
+  AUTH_SERVICE_URL: z.string().url().default("http://auth-service:3005"),
 
   // ── Upstream services ────────────────────────────────────────────────────────
   INVENTORY_SERVICE_URL:   z.string().url().default("http://inventory-service:3001"),
@@ -47,6 +59,9 @@ const schema = z.object({
   RATE_LIMIT_MOISTURE_MAX:  z.coerce.number().int().min(1).default(60),
   RATE_LIMIT_ENVIRONMENT_MAX: z.coerce.number().int().min(1).default(300),
   RATE_LIMIT_ALERTS_MAX:    z.coerce.number().int().min(1).default(200),
+  // Auth endpoints are brute-force vectors — use a tighter window.
+  RATE_LIMIT_AUTH_MAX:       z.coerce.number().int().min(1).default(20),
+  RATE_LIMIT_AUTH_WINDOW_MS: z.coerce.number().int().min(1_000).default(900_000), // 15 min
 });
 
 const result = schema.safeParse(process.env);

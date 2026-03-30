@@ -127,3 +127,10 @@ export const alertsLimiter = makeLimiter({
   name: "alerts",
   max:  env.RATE_LIMIT_ALERTS_MAX,
 });
+
+// Auth endpoints are a brute-force target — apply a tighter window.
+export const authLimiter = makeLimiter({
+  name:     "auth",
+  max:      env.RATE_LIMIT_AUTH_MAX,
+  windowMs: env.RATE_LIMIT_AUTH_WINDOW_MS,
+});
