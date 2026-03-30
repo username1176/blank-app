@@ -100,7 +100,10 @@ apiClient.interceptors.response.use(
       return apiClient(originalRequest);
     } catch (refreshError) {
       drainQueue(refreshError, null);
-      logout();
+      // Mark the session as expired so the login page can show a notice,
+      // then clear auth state.  logout({ sessionExpired: true }) sets both
+      // atomically so ProtectedRoute re-renders and redirects in one pass.
+      logout({ sessionExpired: true });
       return Promise.reject(refreshError);
     } finally {
       isRefreshing = false;

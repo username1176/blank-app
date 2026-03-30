@@ -1,13 +1,18 @@
-import { Outlet } from "react-router-dom";
-import Sidebar    from "./Sidebar";
-import TopBar     from "./TopBar";
+import { Outlet }          from "react-router-dom";
+import Sidebar             from "./Sidebar";
+import TopBar              from "./TopBar";
+import { useTokenRefresh } from "../../hooks/useTokenRefresh";
 
 /**
  * Root shell for all authenticated pages.
- * Renders the sidebar, top bar, and a scrollable main content area
- * where child routes are mounted via <Outlet />.
+ *
+ * Mounts useTokenRefresh here so the proactive refresh scheduler runs for the
+ * entire authenticated session — it needs to live above the page-level Outlet
+ * so it isn't unmounted on page transitions.
  */
 export default function AppLayout() {
+  useTokenRefresh();
+
   return (
     <div className="flex min-h-screen">
       <Sidebar />

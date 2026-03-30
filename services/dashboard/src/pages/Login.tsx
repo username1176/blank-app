@@ -1,33 +1,52 @@
-import { useState, type FormEvent } from "react";
-import { useNavigate, useLocation }  from "react-router-dom";
-import { useAuthStore }              from "../store/authStore";
-import { login as apiLogin }         from "../api/auth";
-import LoadingSpinner                from "../components/ui/LoadingSpinner";
-import type { AuthUser }             from "../types";
+/**
+ * Login page.
+ *
+ * Behaviour:
+ *   • Already-authenticated users are redirected to their intended destination
+ *     (or /dashboard) as soon as the persist store finishes hydrating.
+ *   • When the Axios interceptor forces a logout due to an expired refresh
+ *     token, the store's sessionExpired flag is true.  The page shows a banner
+ *     explaining what happened, then clears the flag so it doesn't re-appear
+ *     on the next visit.
+ *   • Login errors are mapped to plain-English messages in the useAuth hook;
+ *     this component just renders whatever string it receives.
+ */
 
-/** Decode the customer_id, site_ids etc. from an access token without verifying the signature. */
-function decodeAccessToken(token: string): AuthUser | null {
-  try {
-    const payload = JSON.parse(atob(token.split(".")[1] ?? "")) as Record<string, unknown>;
-    return {
-      userId:     String(payload["sub"] ?? ""),
-      customerId: String(payload["customer_id"] ?? ""),
-      email:      typeof payload["email"] === "string" ? payload["email"] : null,
-      siteIds:    Array.isArray(payload["site_ids"])
-        ? (payload["site_ids"] as unknown[]).map(String)
-        : [],
-    };
-  } catch {
-    return null;
-  }
-}
+import { useState, type FormEvent, useEffect } from "react";
+import { useNavigate, useLocation }             from "react-router-dom";
+import { useAuth }                              from "../hooks/useAuth";
+import { useAuthStore }                         from "../store/authStore";
+import LoadingSpinner                           from "../components/ui/LoadingSpinner";
 
 export default function Login() {
-  const navigate    = useNavigate();
-  const location    = useLocation();
-  const setSession  = useAuthStore((s) => s.setSession);
+  const navigate  = useNavigate();
+  const location  = useLocation();
+  const auth      = useAuth();
 
+  // Where to send the user after a successful login.
   const from = (location.state as { from?: { pathname: string } })?.from?.pathname ?? "/dashboard";
+
+  // Wait for the persist store to hydrate before deciding to redirect.
+  const _hydrated = useAuthStore((s) => s._hydrated);
+
+  // Redirect already-authenticated users away from this page.
+  useEffect(() => {
+    if (_hydrated && auth.isAuthenticated) {
+      navigate(from, { replace: true });
+    }
+  }, [_hydrated, auth.isAuthenticated, from, navigate]);
+
+  // Capture the session-expired flag on first render, then clear it from the
+  // store so it doesn't reappear if the user navigates away and comes back.
+  const [showExpiredBanner, setShowExpiredBanner] = useState(auth.sessionExpired);
+  useEffect(() => {
+    if (auth.sessionExpired) {
+      setShowExpiredBanner(true);
+      auth.clearSessionExpired();
+    }
+  // Only run on mount — intentionally omitting auth from deps.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const [email,    setEmail]    = useState("");
   const [password, setPassword] = useState("");
@@ -37,22 +56,14 @@ export default function Login() {
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setError(null);
+    setShowExpiredBanner(false);
     setLoading(true);
 
     try {
-      const tokens = await apiLogin({ email, password });
-      const user   = decodeAccessToken(tokens.access_token);
-
-      if (!user) throw new Error("Invalid token received from server");
-
-      setSession(tokens, user);
+      await auth.login(email, password);
       navigate(from, { replace: true });
-    } catch (err: unknown) {
-      const msg =
-        err instanceof Error
-          ? err.message
-          : "Login failed — please check your credentials";
-      setError(msg);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Login failed — please try again.");
     } finally {
       setLoading(false);
     }
@@ -61,7 +72,8 @@ export default function Login() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-50 px-4">
       <div className="w-full max-w-sm">
-        {/* Logo */}
+
+        {/* Logo + heading */}
         <div className="flex flex-col items-center mb-8">
           <div className="w-12 h-12 rounded-xl bg-blue-600 flex items-center justify-center shadow-lg mb-3">
             <svg className="w-7 h-7 text-white" fill="currentColor" viewBox="0 0 20 20">
@@ -73,14 +85,36 @@ export default function Login() {
         </div>
 
         {/* Card */}
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-          <form onSubmit={handleSubmit} className="space-y-4">
-            {error && (
-              <div className="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
-                {error}
-              </div>
-            )}
+        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 space-y-4">
 
+          {/* Session-expired banner */}
+          {showExpiredBanner && (
+            <div className="flex items-start gap-3 rounded-lg bg-amber-50 border border-amber-200 px-4 py-3">
+              <svg className="w-4 h-4 text-amber-500 mt-0.5 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                <path fillRule="evenodd" clipRule="evenodd"
+                  d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" />
+              </svg>
+              <div>
+                <p className="text-sm font-medium text-amber-800">Your session has expired</p>
+                <p className="text-xs text-amber-700 mt-0.5">
+                  Please sign in again to continue.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* API / validation error */}
+          {error && (
+            <div className="flex items-start gap-3 rounded-lg bg-red-50 border border-red-200 px-4 py-3">
+              <svg className="w-4 h-4 text-red-500 mt-0.5 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                <path fillRule="evenodd" clipRule="evenodd"
+                  d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" />
+              </svg>
+              <p className="text-sm text-red-700">{error}</p>
+            </div>
+          )}
+
+          <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label htmlFor="email" className="block text-sm font-medium text-slate-700 mb-1">
                 Email
