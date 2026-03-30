@@ -1,0 +1,62 @@
+version: "3.9"
+
+# ── Edge Processor — Docker Compose ──────────────────────────────────────────
+#
+# Standard (development / x86) usage:
+#   docker compose up edge-processor
+#
+# Jetson (L4T) — build & run with GPU access:
+#   DOCKER_BUILDKIT=1 docker compose \
+#     -f docker-compose.yml -f docker-compose.jetson.yml \
+#     up edge-processor
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  edge-processor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: python:3.10-slim
+        INSTALL_OPENCV_PIP: "1"
+    image: edge-processor:latest
+    container_name: edge-processor
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    environment:
+      # Override individual vars here when needed, e.g. for CI
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+
+    volumes:
+      # Bind-mount for debug frames (optional — only active when DEBUG_FRAME_DIR is set)
+      - debug_frames:/tmp/debug_frames
+
+    # Host networking gives the container direct access to LAN cameras.
+    # On Jetson, this also exposes /dev/video* device nodes within the network
+    # namespace.  Comment out if your cameras are accessible via Docker bridge.
+    network_mode: host
+
+    # USB thermal camera pass-through (e.g. FLIR Lepton on USB adapter).
+    # Uncomment the devices block if THERMAL_V4L2_DEVICE is set.
+    # devices:
+    #   - /dev/video1:/dev/video1
+
+    # Resource limits — tune for the Jetson module variant
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+volumes:
+  debug_frames:

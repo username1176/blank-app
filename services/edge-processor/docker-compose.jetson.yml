@@ -1,0 +1,45 @@
+version: "3.9"
+
+# ── Jetson override ───────────────────────────────────────────────────────────
+# Merge with the base compose file to enable L4T base image, GPU runtime,
+# and USB device pass-through for the thermal camera.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.jetson.yml up
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  edge-processor:
+    build:
+      args:
+        # L4T r35.3.1 = JetPack 5.1.2 (CUDA 11.4, supports Orin / Xavier / Nano)
+        # Check https://catalog.ngc.nvidia.com/orgs/nvidia/containers/l4t-base for
+        # the latest tag matching your installed JetPack version.
+        BASE_IMAGE: nvcr.io/nvidia/l4t-base:r35.3.1
+        # Skip pip OpenCV — use the CUDA+GStreamer build shipped with JetPack
+        INSTALL_OPENCV_PIP: "0"
+
+    runtime: nvidia
+
+    environment:
+      # Enable GStreamer hardware decode pipeline
+      USE_GSTREAMER: "true"
+      # Point to NVIDIA's hardware-accelerated OpenCV (installed by JetPack)
+      PYTHONPATH: "/usr/lib/python3/dist-packages:/app"
+
+    # Expose V4L2 device for USB thermal cameras (adjust index as needed)
+    devices:
+      - /dev/video1:/dev/video1
+
+    # GPU access
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, video]
+        limits:
+          memory: 2G
+        reservations:
+          memory: 256M

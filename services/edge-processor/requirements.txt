@@ -1,0 +1,19 @@
+# Core
+opencv-python-headless>=4.8,<5
+numpy>=1.24,<2
+httpx[http2]>=0.27,<1
+pydantic-settings>=2.2,<3
+pydantic>=2.6,<3
+
+# Used for async scheduling and file I/O
+anyio>=4.3,<5
+
+# Image encoding helpers
+Pillow>=10.2,<11
+
+# Logging
+python-json-logger>=2.0,<3
+
+# Optional: on Jetson, opencv is installed from apt with CUDA+GStreamer support.
+# Remove opencv-python-headless from this file when building the Jetson image
+# (pass --build-arg INSTALL_OPENCV_PIP=0) so the apt version is used instead.
