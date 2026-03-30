@@ -59,6 +59,15 @@ class Settings(BaseSettings):
     # Moisture percentage above which an alert is triggered
     MOISTURE_ALERT_THRESHOLD_PCT: float = Field(default=15.0, ge=0.0, le=100.0)
 
+    # ── Training ──────────────────────────────────────────────────────────────
+    # Root directory where fine-tuned checkpoints are saved.
+    # Layout: {MODEL_CHECKPOINT_DIR}/{customer_id}/{version}/
+    MODEL_CHECKPOINT_DIR: str = Field(default="/checkpoints/moisture")
+    # Maximum number of labelled samples allowed in a single training submission.
+    MAX_TRAINING_SAMPLES: int = Field(default=10_000, ge=10)
+    # Maximum size of the uploaded dataset ZIP (megabytes).
+    MAX_DATASET_ZIP_MB: int = Field(default=500, ge=1)
+
     @field_validator("ENVIRONMENT")
     @classmethod
     def validate_environment(cls, v: str) -> str:
