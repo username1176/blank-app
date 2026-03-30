@@ -1,10 +1,26 @@
 import express, { Application, Request, Response } from "express";
+import { pool } from "./config/database";
 import { requestLogger } from "./middleware/requestLogger";
 import { errorHandler } from "./middleware/errorHandler";
 import { healthRouter } from "./routes/health";
+import { PileRepository } from "./repositories/pileRepository";
+import { InventorySnapshotRepository } from "./repositories/inventorySnapshotRepository";
 
+// Repositories are stateless (they hold only a pool reference) so a single
+// instance per process is correct and avoids unnecessary allocations.
+const pileRepo     = new PileRepository(pool);
+const snapshotRepo = new InventorySnapshotRepository(pool);
+
+// Attach to res.locals so every route handler can access them without
+// importing the pool directly.
 export function createApp(): Application {
   const app = express();
+
+  app.use((_req, res, next) => {
+    res.locals["pileRepo"]     = pileRepo;
+    res.locals["snapshotRepo"] = snapshotRepo;
+    next();
+  });
 
   // ── Request parsing ───────────────────────────────────────────────────────
   app.use(express.json());
