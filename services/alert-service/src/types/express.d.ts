@@ -1,4 +1,6 @@
 import { AlertRepository } from "../repositories/alertRepository";
+import { NotificationPreferenceRepository } from "../repositories/notificationPreferenceRepository";
+import { AlertThresholdRepository } from "../repositories/alertThresholdRepository";
 
 declare global {
   namespace Express {
@@ -8,7 +10,9 @@ declare global {
         customerId: string;
         email:      string | null;
       };
-      alertRepo: AlertRepository;
+      alertRepo:      AlertRepository;
+      preferenceRepo: NotificationPreferenceRepository;
+      thresholdRepo:  AlertThresholdRepository;
     }
   }
 }

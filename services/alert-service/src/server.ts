@@ -29,6 +29,7 @@ import { createNotificationRouter } from "./notifications/router";
 import { AlertRepository } from "./repositories/alertRepository";
 import { NotificationPreferenceRepository } from "./repositories/notificationPreferenceRepository";
 import { NotificationLogRepository } from "./repositories/notificationLogRepository";
+import { AlertThresholdRepository } from "./repositories/alertThresholdRepository";
 
 // ---------------------------------------------------------------------------
 // Dependency container
@@ -37,6 +38,7 @@ import { NotificationLogRepository } from "./repositories/notificationLogReposit
 const alertRepo      = new AlertRepository(pool);
 const preferenceRepo = new NotificationPreferenceRepository(pool);
 const logRepo        = new NotificationLogRepository(pool);
+const thresholdRepo  = new AlertThresholdRepository(pool);
 
 // Notification channels — use real providers when credentials are present and
 // NOTIFICATIONS_ENABLED=true; fall back to no-op channels otherwise.
@@ -84,7 +86,7 @@ consumer.start().catch((err: unknown) => {
 // HTTP server
 // ---------------------------------------------------------------------------
 
-const app    = createApp({ consumer, alertRepo });
+const app    = createApp({ consumer, alertRepo, preferenceRepo, thresholdRepo });
 const server = app.listen(env.PORT, () => {
   logger.info("alert-service listening", {
     port:   env.PORT,

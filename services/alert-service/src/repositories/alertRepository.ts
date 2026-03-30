@@ -20,19 +20,31 @@ import { Alert, AlertPayload, AlertRow, AlertSeverity } from "../types/alert";
 
 function toAlert(row: AlertRow): Alert {
   return {
-    id:         row.id,
-    receivedAt: row.received_at,
-    customerId: row.customer_id,
-    siteId:     row.site_id,
-    source:     row.source,
-    alertType:  row.alert_type,
-    severity:   row.severity as AlertSeverity,
-    entityId:   row.entity_id,
-    entityType: row.entity_type,
-    message:    row.message,
-    payload:    row.payload,
+    id:                  row.id,
+    receivedAt:          row.received_at,
+    customerId:          row.customer_id,
+    siteId:              row.site_id,
+    source:              row.source,
+    alertType:           row.alert_type,
+    severity:            row.severity as AlertSeverity,
+    entityId:            row.entity_id,
+    entityType:          row.entity_type,
+    message:             row.message,
+    payload:             row.payload,
+    acknowledgedAt:      row.acknowledged_at      ?? null,
+    acknowledgedBy:      row.acknowledged_by      ?? null,
+    acknowledgmentNote:  row.acknowledgment_note  ?? null,
   };
 }
+
+/** Columns projected in every SELECT — kept in one place so they stay in sync. */
+const ALERT_COLS = `
+  id, received_at, customer_id, site_id,
+  source, alert_type, severity,
+  entity_id, entity_type,
+  message, payload,
+  acknowledged_at, acknowledged_by, acknowledgment_note
+`;
 
 // ---------------------------------------------------------------------------
 // Tenant-scoped query helper (inline — avoids a circular db/tenant import)
@@ -202,10 +214,7 @@ export class AlertRepository {
     const limitPlaceholder = `$${params.length}`;
 
     const sql = `
-      SELECT id, received_at, customer_id, site_id,
-             source, alert_type, severity,
-             entity_id, entity_type,
-             message, payload
+      SELECT ${ALERT_COLS}
         FROM alerts
        WHERE ${conditions.join("\n         AND ")}
        ORDER BY received_at DESC
@@ -224,10 +233,7 @@ export class AlertRepository {
    */
   async findById(customerId: string, id: string): Promise<Alert | null> {
     const sql = `
-      SELECT id, received_at, customer_id, site_id,
-             source, alert_type, severity,
-             entity_id, entity_type,
-             message, payload
+      SELECT ${ALERT_COLS}
         FROM alerts
        WHERE customer_id = $1
          AND id          = $2
@@ -236,6 +242,47 @@ export class AlertRepository {
 
     const rows = await queryTenant<AlertRow>(this.pool, customerId, sql, [customerId, id]);
     const row  = rows[0];
+    return row ? toAlert(row) : null;
+  }
+
+  // ── Acknowledge ───────────────────────────────────────────────────────────
+
+  /**
+   * Mark an alert as acknowledged.
+   *
+   * Idempotent — re-acknowledging an already-acknowledged alert overwrites
+   * the previous acknowledgement (last-writer-wins).  Returns the updated
+   * alert, or null when the ID does not exist / belongs to another tenant.
+   *
+   * @param customerId   Tenant from the JWT (not trusted from the caller).
+   * @param id           Alert UUID.
+   * @param acknowledgedBy  userId (JWT sub) performing the acknowledgement.
+   * @param note         Optional freetext note (max 1 000 chars).
+   */
+  async acknowledge(
+    customerId:   string,
+    id:           string,
+    acknowledgedBy: string,
+    note?:        string,
+  ): Promise<Alert | null> {
+    const sql = `
+      UPDATE alerts
+         SET acknowledged_at   = NOW(),
+             acknowledged_by   = $3,
+             acknowledgment_note = $4
+       WHERE customer_id = $1
+         AND id          = $2
+      RETURNING ${ALERT_COLS}
+    `;
+
+    const rows = await queryTenant<AlertRow>(this.pool, customerId, sql, [
+      customerId,
+      id,
+      acknowledgedBy,
+      note?.slice(0, 1_000) ?? null,
+    ]);
+
+    const row = rows[0];
     return row ? toAlert(row) : null;
   }
 

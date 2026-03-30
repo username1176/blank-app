@@ -99,6 +99,16 @@ export type AlertPayload = z.infer<typeof alertPayloadSchema>;
 
 // ---------------------------------------------------------------------------
 // Domain type — a persisted alert record
+//
+// Acknowledgement columns are added via migration:
+//
+//   ALTER TABLE alerts
+//     ADD COLUMN acknowledged_at   TIMESTAMPTZ,
+//     ADD COLUMN acknowledged_by   TEXT,        -- userId from JWT
+//     ADD COLUMN acknowledgment_note TEXT;
+//
+//   CREATE INDEX ON alerts (customer_id, acknowledged_at)
+//     WHERE acknowledged_at IS NULL;            -- fast unacknowledged queries
 // ---------------------------------------------------------------------------
 
 export interface Alert {
@@ -113,7 +123,12 @@ export interface Alert {
   entityType:  string | null;
   message:     string;
   /** Full original Kafka payload, preserved for downstream consumers. */
-  payload:     Record<string, unknown>;
+  payload:          Record<string, unknown>;
+  /** ISO timestamp when a user acknowledged this alert.  null = unacknowledged. */
+  acknowledgedAt:   Date | null;
+  /** userId (JWT sub) of the user who acknowledged the alert. */
+  acknowledgedBy:   string | null;
+  acknowledgmentNote: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -121,17 +136,20 @@ export interface Alert {
 // ---------------------------------------------------------------------------
 
 export interface AlertRow {
-  id:          string;
-  received_at: Date;
-  customer_id: string;
-  site_id:     string | null;
-  source:      string;
-  alert_type:  string;
-  severity:    string;
-  entity_id:   string | null;
-  entity_type: string | null;
-  message:     string;
-  payload:     Record<string, unknown>;
+  id:                  string;
+  received_at:         Date;
+  customer_id:         string;
+  site_id:             string | null;
+  source:              string;
+  alert_type:          string;
+  severity:            string;
+  entity_id:           string | null;
+  entity_type:         string | null;
+  message:             string;
+  payload:             Record<string, unknown>;
+  acknowledged_at:     Date | null;
+  acknowledged_by:     string | null;
+  acknowledgment_note: string | null;
 }
 
 // ---------------------------------------------------------------------------
