@@ -3,8 +3,25 @@ import { logger } from "./config/logger";
 import { closePool } from "./config/database";
 import { pool } from "./config/database";
 import { createApp } from "./app";
+import { createAnomalyModule } from "./anomaly";
 import { mqttClient } from "./mqtt/client";
 import { createMessageHandler } from "./mqtt/handler";
+
+// ---------------------------------------------------------------------------
+// Anomaly detection setup
+// ---------------------------------------------------------------------------
+
+const anomalyModule = env.ANOMALY_ENABLED ? createAnomalyModule(pool) : null;
+
+// Connect the Kafka producer asynchronously before accepting traffic.
+if (anomalyModule) {
+  anomalyModule.connect().catch((err: unknown) => {
+    logger.error("Failed to connect anomaly Kafka producer", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    // Non-fatal: service stays up; anomaly events will be dropped until reconnect.
+  });
+}
 
 // ---------------------------------------------------------------------------
 // MQTT setup
@@ -12,7 +29,9 @@ import { createMessageHandler } from "./mqtt/handler";
 
 if (env.MQTT_ENABLED) {
   // Wire the message handler before connecting so no messages are missed.
-  mqttClient.onMessage(createMessageHandler(pool));
+  mqttClient.onMessage(
+    createMessageHandler(pool, anomalyModule?.detector ?? null),
+  );
   mqttClient.connect();
 } else {
   logger.info("MQTT disabled (MQTT_ENABLED=false) — REST-only mode");
@@ -22,12 +41,14 @@ if (env.MQTT_ENABLED) {
 // HTTP server
 // ---------------------------------------------------------------------------
 
-const app    = createApp();
+const app    = createApp(anomalyModule?.detector ?? null);
 const server = app.listen(env.PORT, () => {
   logger.info("environment-service listening", {
-    port: env.PORT,
-    env:  env.NODE_ENV,
-    mqtt: env.MQTT_ENABLED ? env.MQTT_URL : "disabled",
+    port:    env.PORT,
+    env:     env.NODE_ENV,
+    mqtt:    env.MQTT_ENABLED    ? env.MQTT_URL : "disabled",
+    anomaly: env.ANOMALY_ENABLED ? "enabled"    : "disabled",
+    kafka:   env.KAFKA_ENABLED   ? env.KAFKA_BROKERS : "disabled",
   });
 });
 
@@ -41,6 +62,9 @@ async function shutdown(signal: string): Promise<void> {
   server.close(async () => {
     try {
       await mqttClient.disconnect();
+      if (anomalyModule) {
+        await anomalyModule.disconnect();
+      }
       await closePool();
       logger.info("Shutdown complete");
       process.exit(0);

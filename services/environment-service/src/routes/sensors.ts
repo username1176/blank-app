@@ -3,6 +3,7 @@ import { z } from "zod";
 import { authenticate } from "../middleware/authenticate";
 import { validate } from "../middleware/validate";
 import { AppError } from "../middleware/errorHandler";
+import { AnomalyDetector } from "../anomaly/detector";
 import { SensorReadingRepository } from "../repositories/sensorReadingRepository";
 import {
   createSensorReadingSchema,
@@ -34,12 +35,27 @@ sensorsRouter.post(
   validate.body(createSensorReadingSchema),
   async (req, res, next) => {
     try {
-      const { customerId } = res.locals["auth"];
-      const sensorRepo     = res.locals["sensorRepo"] as SensorReadingRepository;
-      const body           = req.body as z.infer<typeof createSensorReadingSchema>;
+      const { customerId }   = res.locals["auth"];
+      const sensorRepo       = res.locals["sensorRepo"] as SensorReadingRepository;
+      const anomalyDetector  = res.locals["anomalyDetector"] as AnomalyDetector | null;
+      const body             = req.body as z.infer<typeof createSensorReadingSchema>;
 
       const reading = await sensorRepo.insert(customerId, body);
       res.status(201).json({ data: reading });
+
+      // Fire-and-forget — response already sent.
+      if (anomalyDetector) {
+        anomalyDetector
+          .check({
+            customerId,
+            siteId:      body.siteId,
+            sensorId:    body.sensorId,
+            sensorType:  body.sensorType,
+            temperatureC: body.temperatureC  ?? null,
+            humidityPct:  body.humidityPct   ?? null,
+          })
+          .catch(() => {/* logged inside detector */});
+      }
     } catch (err) {
       next(err);
     }
@@ -61,12 +77,29 @@ sensorsRouter.post(
   validate.body(batchSensorReadingSchema),
   async (req, res, next) => {
     try {
-      const { customerId } = res.locals["auth"];
-      const sensorRepo     = res.locals["sensorRepo"] as SensorReadingRepository;
-      const { readings }   = req.body as z.infer<typeof batchSensorReadingSchema>;
+      const { customerId }  = res.locals["auth"];
+      const sensorRepo      = res.locals["sensorRepo"] as SensorReadingRepository;
+      const anomalyDetector = res.locals["anomalyDetector"] as AnomalyDetector | null;
+      const { readings }    = req.body as z.infer<typeof batchSensorReadingSchema>;
 
       const inserted = await sensorRepo.insertBatch(customerId, readings);
       res.status(201).json({ data: { inserted } });
+
+      // Fire-and-forget anomaly checks for every reading in the batch.
+      if (anomalyDetector) {
+        for (const r of readings) {
+          anomalyDetector
+            .check({
+              customerId,
+              siteId:      r.siteId,
+              sensorId:    r.sensorId,
+              sensorType:  r.sensorType,
+              temperatureC: r.temperatureC  ?? null,
+              humidityPct:  r.humidityPct   ?? null,
+            })
+            .catch(() => {/* logged inside detector */});
+        }
+      }
     } catch (err) {
       next(err);
     }

@@ -12,6 +12,7 @@
 
 import { Pool } from "pg";
 import { logger } from "../config/logger";
+import { AnomalyDetector } from "../anomaly/detector";
 import { SensorReadingRepository } from "../repositories/sensorReadingRepository";
 import { mqttPayloadSchema } from "../types/sensorReading";
 import { parseTopic } from "./topics";
@@ -33,7 +34,10 @@ export function getMqttStats(): { received: number; accepted: number; rejected: 
  * Returns the message handler function bound to the given pg Pool.
  * The repository is created per-message (it holds no state — just the pool).
  */
-export function createMessageHandler(pool: Pool) {
+export function createMessageHandler(
+  pool: Pool,
+  anomalyDetector: AnomalyDetector | null = null,
+) {
   const repo = new SensorReadingRepository(pool);
 
   return async function handleMessage(
@@ -99,6 +103,25 @@ export function createMessageHandler(pool: Pool) {
         sensorId,
         sensorType: msg.sensor_type,
       });
+
+      // Fire-and-forget anomaly check — never block the ingestion path.
+      if (anomalyDetector) {
+        anomalyDetector
+          .check({
+            customerId,
+            siteId,
+            sensorId,
+            sensorType:  msg.sensor_type,
+            temperatureC: msg.temperature_c  ?? null,
+            humidityPct:  msg.humidity_pct   ?? null,
+          })
+          .catch((err: unknown) =>
+            logger.error("MQTT: anomaly check failed", {
+              sensorId,
+              error: err instanceof Error ? err.message : String(err),
+            }),
+          );
+      }
     } catch (err) {
       // DB failures are logged but not re-thrown so the handler loop continues.
       logger.error("MQTT: failed to persist reading", {

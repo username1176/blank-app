@@ -4,17 +4,21 @@ import { requestLogger } from "./middleware/requestLogger";
 import { errorHandler } from "./middleware/errorHandler";
 import { healthRouter } from "./routes/health";
 import { sensorsRouter } from "./routes/sensors";
+import { AnomalyDetector } from "./anomaly/detector";
 import { SensorReadingRepository } from "./repositories/sensorReadingRepository";
 
 // Stateless repositories — single instance per process is correct.
 const sensorRepo = new SensorReadingRepository(pool);
 
-export function createApp(): Application {
+export function createApp(
+  anomalyDetector: AnomalyDetector | null = null,
+): Application {
   const app = express();
 
-  // ── Attach repositories to every request ──────────────────────────────────
+  // ── Attach repositories / services to every request ───────────────────────
   app.use((_req, res, next) => {
-    res.locals["sensorRepo"] = sensorRepo;
+    res.locals["sensorRepo"]      = sensorRepo;
+    res.locals["anomalyDetector"] = anomalyDetector;
     next();
   });
 

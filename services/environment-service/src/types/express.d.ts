@@ -1,4 +1,5 @@
 import { SensorReadingRepository } from "../repositories/sensorReadingRepository";
+import { AnomalyDetector } from "../anomaly/detector";
 
 declare global {
   namespace Express {
@@ -8,7 +9,8 @@ declare global {
         customerId: string;
         email:      string | null;
       };
-      sensorRepo: SensorReadingRepository;
+      sensorRepo:      SensorReadingRepository;
+      anomalyDetector: AnomalyDetector | null;
     }
   }
 }
