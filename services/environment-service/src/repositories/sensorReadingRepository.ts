@@ -165,7 +165,7 @@ export class SensorReadingRepository {
     return result.rows.map(toReading);
   }
 
-  // ── Time-range query ─────────────────────────────────────────────────────
+  // ── Time-range query — specific sensor ───────────────────────────────────
 
   /**
    * Fetch raw readings for a specific sensor within a time window.
@@ -192,6 +192,51 @@ export class SensorReadingRepository {
 
     const result = await queryTenant<SensorReadingRow>(
       this.pool, customerId, sql, [customerId, sensorId, from, to, limit],
+    );
+    return result.rows.map(toReading);
+  }
+
+  // ── Time-range query — whole site ─────────────────────────────────────────
+
+  /**
+   * Fetch readings for every sensor at a site within a time window.
+   * Optionally filtered to a specific sensorType.
+   * Ordered newest-first across all sensors.
+   */
+  async findRangeBySite(
+    customerId: string,
+    siteId: string,
+    from: Date,
+    to: Date,
+    opts: { sensorType?: string; limit?: number } = {},
+  ): Promise<SensorReading[]> {
+    const limit = opts.limit ?? 1000;
+    const params: unknown[] = [customerId, siteId, from, to];
+    const extra: string[] = [];
+
+    if (opts.sensorType !== undefined) {
+      params.push(opts.sensorType);
+      extra.push(`AND sensor_type = $${params.length}`);
+    }
+    params.push(limit);
+    const limitPlaceholder = `$${params.length}`;
+
+    const sql = `
+      SELECT time, customer_id, site_id, sensor_id, sensor_type,
+             temperature_c::text, humidity_pct::text, pressure_hpa::text, co2_ppm::text,
+             battery_pct::text, signal_strength_dbm::text, created_at
+        FROM sensor_readings
+       WHERE customer_id = $1
+         AND site_id     = $2
+         AND time       >= $3
+         AND time        < $4
+         ${extra.join("\n         ")}
+       ORDER BY time DESC
+       LIMIT ${limitPlaceholder}
+    `;
+
+    const result = await queryTenant<SensorReadingRow>(
+      this.pool, customerId, sql, params,
     );
     return result.rows.map(toReading);
   }

@@ -1,4 +1,5 @@
 import { SensorReadingRepository } from "../repositories/sensorReadingRepository";
+import { AnomalyRepository } from "../repositories/anomalyRepository";
 import { AnomalyDetector } from "../anomaly/detector";
 
 declare global {
@@ -10,6 +11,7 @@ declare global {
         email:      string | null;
       };
       sensorRepo:      SensorReadingRepository;
+      anomalyRepo:     AnomalyRepository | null;
       anomalyDetector: AnomalyDetector | null;
     }
   }

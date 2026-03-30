@@ -25,6 +25,7 @@
 import { randomUUID } from "crypto";
 import { Pool } from "pg";
 import { logger } from "../config/logger";
+import { AnomalyRepository } from "../repositories/anomalyRepository";
 import { BaselineCache } from "./baseline";
 import {
   AnomalyAlertType,
@@ -67,10 +68,11 @@ export class AnomalyDetector {
   private readonly cooldown = new CooldownStore();
 
   constructor(
-    private readonly pool:     Pool,
-    private readonly baseline: BaselineCache,
-    private readonly producer: IAlertProducer,
-    private readonly config:   AnomalyDetectorConfig,
+    private readonly pool:          Pool,
+    private readonly baseline:      BaselineCache,
+    private readonly producer:      IAlertProducer,
+    private readonly config:        AnomalyDetectorConfig,
+    private readonly anomalyRepo:   AnomalyRepository | null = null,
   ) {}
 
   // ── Public API ─────────────────────────────────────────────────────────────
@@ -178,6 +180,17 @@ export class AnomalyDetector {
         baselineMean:   Math.round(stats.mean * 100) / 100,
         deviationSigma: event.deviationSigma,
       });
+
+      // Persist to DB so the REST API can surface anomalies without a Kafka consumer.
+      // Non-fatal: a DB failure must not prevent the Kafka event from being recorded.
+      if (this.anomalyRepo) {
+        this.anomalyRepo.insert(event).catch((dbErr: unknown) => {
+          logger.error("Anomaly: failed to persist event to DB", {
+            alertId: event.id, sensorId, metric,
+            error: dbErr instanceof Error ? dbErr.message : String(dbErr),
+          });
+        });
+      }
     } catch (err) {
       logger.error("Anomaly: failed to publish event", {
         alertId: event.id, sensorId, metric,

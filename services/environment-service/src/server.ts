@@ -41,7 +41,10 @@ if (env.MQTT_ENABLED) {
 // HTTP server
 // ---------------------------------------------------------------------------
 
-const app    = createApp(anomalyModule?.detector ?? null);
+const app    = createApp(
+  anomalyModule?.detector    ?? null,
+  anomalyModule?.anomalyRepo ?? null,
+);
 const server = app.listen(env.PORT, () => {
   logger.info("environment-service listening", {
     port:    env.PORT,

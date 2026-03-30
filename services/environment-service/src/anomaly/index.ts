@@ -14,6 +14,7 @@
 
 import { Pool } from "pg";
 import { env } from "../config/env";
+import { AnomalyRepository } from "../repositories/anomalyRepository";
 import { BaselineCache } from "./baseline";
 import { AnomalyDetector } from "./detector";
 import { EnvironmentAlertProducer, NoopAlertProducer } from "./kafka";
@@ -23,9 +24,10 @@ export { AnomalyDetector } from "./detector";
 export type { ReadingForDetection, AnomalyEvent } from "./types";
 
 export interface AnomalyModule {
-  detector:   AnomalyDetector;
-  connect:    () => Promise<void>;
-  disconnect: () => Promise<void>;
+  detector:    AnomalyDetector;
+  anomalyRepo: AnomalyRepository;
+  connect:     () => Promise<void>;
+  disconnect:  () => Promise<void>;
 }
 
 export function createAnomalyModule(pool: Pool): AnomalyModule {
@@ -42,11 +44,13 @@ export function createAnomalyModule(pool: Pool): AnomalyModule {
     ? new EnvironmentAlertProducer()
     : new NoopAlertProducer();
 
-  const baseline = new BaselineCache();
-  const detector = new AnomalyDetector(pool, baseline, producer, config);
+  const baseline    = new BaselineCache();
+  const anomalyRepo = new AnomalyRepository(pool);
+  const detector    = new AnomalyDetector(pool, baseline, producer, config, anomalyRepo);
 
   return {
     detector,
+    anomalyRepo,
     connect:    () => producer.connect(),
     disconnect: () => producer.disconnect(),
   };
