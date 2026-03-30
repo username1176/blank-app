@@ -3,6 +3,8 @@ import { pool } from "./config/database";
 import { requestLogger } from "./middleware/requestLogger";
 import { errorHandler } from "./middleware/errorHandler";
 import { healthRouter } from "./routes/health";
+import { pilesRouter } from "./routes/piles";
+import { inventoryRouter } from "./routes/inventory";
 import { PileRepository } from "./repositories/pileRepository";
 import { InventorySnapshotRepository } from "./repositories/inventorySnapshotRepository";
 
@@ -34,6 +36,8 @@ export function createApp(): Application {
 
   // ── Routes ────────────────────────────────────────────────────────────────
   app.use("/", healthRouter);
+  app.use("/", pilesRouter);
+  app.use("/", inventoryRouter);
 
   // Catch-all for unmatched routes
   app.use((_req: Request, res: Response) => {

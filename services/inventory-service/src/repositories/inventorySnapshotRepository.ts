@@ -12,6 +12,7 @@ import {
   DropDetection,
   CreateSnapshotInput,
   TimeRangeOptions,
+  PileReconciliationRow,
 } from "../types/inventorySnapshot";
 
 // ---------------------------------------------------------------------------
@@ -450,5 +451,69 @@ export class InventorySnapshotRepository {
       dropPct:           toFloat(row.drop_pct),
       detectedAt:        row.detected_at,
     };
+  }
+
+  // ── Reconciliation ────────────────────────────────────────────────────────
+
+  /**
+   * Return the latest camera and manual measurements for every active pile at
+   * a site in a single query using DISTINCT ON.  The caller computes the
+   * discrepancy values in JS (business logic belongs outside the DAL).
+   */
+  async findReconciliationRows(
+    customerId: string,
+    siteId: string,
+  ): Promise<PileReconciliationRow[]> {
+    const sql = `
+      WITH pile_camera AS (
+        SELECT DISTINCT ON (pile_id)
+               pile_id,
+               volume_m3        AS camera_volume_m3,
+               estimated_tonnes AS camera_tonnes,
+               time             AS camera_measured_at
+          FROM inventory_snapshots
+         WHERE customer_id       = $1
+           AND site_id           = $2
+           AND measurement_source = 'camera'
+         ORDER BY pile_id, time DESC
+      ),
+      pile_manual AS (
+        SELECT DISTINCT ON (pile_id)
+               pile_id,
+               volume_m3 AS manual_volume_m3,
+               time      AS manual_measured_at
+          FROM inventory_snapshots
+         WHERE customer_id       = $1
+           AND site_id           = $2
+           AND measurement_source = 'manual'
+         ORDER BY pile_id, time DESC
+      )
+      SELECT
+        p.id                  AS pile_id,
+        p.name                AS pile_name,
+        p.material_type,
+        p.max_capacity_tonnes,
+        p.bulk_density_t_m3,
+        pc.camera_volume_m3,
+        pc.camera_tonnes,
+        pc.camera_measured_at,
+        pm.manual_volume_m3,
+        pm.manual_measured_at
+      FROM   piles p
+      LEFT   JOIN pile_camera pc ON pc.pile_id = p.id
+      LEFT   JOIN pile_manual  pm ON pm.pile_id = p.id
+      WHERE  p.customer_id = $1
+        AND  p.site_id     = $2
+        AND  p.is_active   = TRUE
+      ORDER  BY p.name
+    `;
+
+    const result = await queryTenant<PileReconciliationRow>(
+      this.pool,
+      customerId,
+      sql,
+      [customerId, siteId],
+    );
+    return result.rows;
   }
 }

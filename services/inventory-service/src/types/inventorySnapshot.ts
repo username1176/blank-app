@@ -142,6 +142,23 @@ export const createSnapshotSchema = z.object({
 export type CreateSnapshotInput = z.infer<typeof createSnapshotSchema>;
 
 // ---------------------------------------------------------------------------
+// Reconciliation — raw DB row joining piles + inventory_snapshots
+// ---------------------------------------------------------------------------
+
+export interface PileReconciliationRow {
+  pile_id:              string;
+  pile_name:            string;
+  material_type:        string;
+  max_capacity_tonnes:  string | null;
+  bulk_density_t_m3:    string | null;
+  camera_volume_m3:     string | null;
+  camera_tonnes:        string | null;
+  camera_measured_at:   Date   | null;
+  manual_volume_m3:     string | null;
+  manual_measured_at:   Date   | null;
+}
+
+// ---------------------------------------------------------------------------
 // Time-range query options
 // ---------------------------------------------------------------------------
 
