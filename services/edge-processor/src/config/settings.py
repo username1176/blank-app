@@ -125,6 +125,49 @@ class Settings(BaseSettings):
     api_max_retries: int = Field(4, ge=0, le=10, description="Max retry attempts per request")
     api_retry_initial_delay_s: float = Field(1.0, ge=0.1, description="Initial retry backoff (seconds)")
 
+    # ── Offline buffer ────────────────────────────────────────────────────────
+    buffer_enabled: bool = Field(
+        True,
+        description="Enable SQLite offline buffer. When False, failed uploads are simply logged.",
+    )
+    buffer_db_path: str = Field(
+        "/data/edge_buffer.db",
+        description="Path to the SQLite buffer database file (created if absent)",
+    )
+    buffer_max_rows: int = Field(
+        10_000,
+        ge=100,
+        description="Max pending rows. Oldest entries are evicted when this is exceeded.",
+    )
+    buffer_max_size_mb: float = Field(
+        512.0,
+        gt=0,
+        description="Soft limit on total BLOB storage (MB). Oldest thermal JPEGs are evicted first.",
+    )
+    buffer_prune_done_after_h: int = Field(
+        24,
+        ge=1,
+        description="Hours to retain synced/failed rows before pruning them",
+    )
+
+    # ── Sync policy ───────────────────────────────────────────────────────────
+    sync_batch_size: int = Field(
+        50,
+        ge=1,
+        le=500,
+        description="Max buffered entries to upload in a single sync pass",
+    )
+    sync_max_attempts: int = Field(
+        5,
+        ge=1,
+        description="After this many failures an entry is permanently marked 'failed'",
+    )
+    sync_connectivity_timeout_s: float = Field(
+        5.0,
+        ge=0.5,
+        description="Timeout for the lightweight /health/live connectivity probe (seconds)",
+    )
+
     # ── Diagnostics ───────────────────────────────────────────────────────────
     log_level: str = Field("INFO", description="Python logging level")
     debug_frame_dir: Optional[str] = Field(

@@ -1,25 +1,30 @@
 """
-Uploader — converts PipelineResult into the exact payloads expected by
-moisture-service and inventory-service, then posts them concurrently.
+Uploader — converts PipelineResult into API payloads and posts them.
+
+Offline resilience
+------------------
+When a `BufferStore` is injected, every failed upload is automatically
+persisted to the local SQLite buffer rather than being silently dropped.
+Buffered entries are replayed by `BufferSyncer` during subsequent cycles
+once connectivity is restored.
+
+Success semantics:
+  The `upload()` method always returns cleanly — "success" means either
+  the data was accepted by the remote API *or* it was safely persisted
+  to the local buffer.  A True/False flag in `UploadResult` indicates
+  which path was taken.
 
 API contracts:
-  moisture-service  POST /predict   multipart/form-data
-      image           (file)  pseudocolour JPEG of thermal frame
-      pile_id         (str)   UUID
-      site_id         (str)   UUID
-      camera_id       (str)   UUID, optional
-      sensor_readings (str)   JSON array of SensorReadingInput, optional
+  moisture-service  POST /predict     multipart/form-data
+      image           (file)  pseudocolour JPEG
+      pile_id         str     UUID
+      site_id         str     UUID
+      camera_id       str     UUID, optional
+      sensor_readings str     JSON array, optional
 
   inventory-service  PUT /piles/:pileId/volume   application/json
-      volumeM3            number  >= 0
-      estimatedTonnes     number | null
-      heightM             number | null
-      surfaceAreaM2       number | null
-      confidenceScore     number | null  (0–1)
-      measurementSource   "camera"
-      cameraId            string | null  UUID
-      time                string  ISO 8601
-      rawImagePath        null
+      volumeM3, estimatedTonnes, heightM, surfaceAreaM2,
+      confidenceScore, measurementSource, cameraId, time, rawImagePath
 """
 
 from __future__ import annotations
@@ -27,35 +32,54 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from ..config.settings import Settings
 from ..processing.pipeline import PipelineResult
 from .client import ApiClient
 
+if TYPE_CHECKING:
+    from ..buffer.store import BufferStore
+
 logger = logging.getLogger(__name__)
 
+# HTTP status codes that indicate a transient server fault worth buffering
+_BUFFER_ON_STATUS = {500, 502, 503, 504}
 
+
+@dataclass
 class UploadResult:
     """Outcome of a single upload cycle."""
-    def __init__(self) -> None:
-        self.moisture_status: Optional[int] = None
-        self.moisture_error: Optional[str] = None
-        self.inventory_status: Optional[int] = None
-        self.inventory_error: Optional[str] = None
+    # HTTP status from the live upload (None if not attempted / buffered)
+    moisture_status:  Optional[int] = None
+    moisture_error:   Optional[str] = None
+    moisture_buffered: bool = False
+
+    inventory_status:  Optional[int] = None
+    inventory_error:   Optional[str] = None
+    inventory_buffered: bool = False
 
     @property
-    def success(self) -> bool:
-        ok_m = self.moisture_status is None or (200 <= self.moisture_status < 300)
-        ok_i = self.inventory_status is None or (200 <= self.inventory_status < 300)
-        return ok_m and ok_i
+    def fully_live(self) -> bool:
+        """True when both targets were accepted live (no buffering needed)."""
+        return (
+            (self.moisture_status is None or 200 <= self.moisture_status < 300)
+            and not self.moisture_buffered
+            and (self.inventory_status is None or 200 <= self.inventory_status < 300)
+            and not self.inventory_buffered
+        )
+
+    @property
+    def any_buffered(self) -> bool:
+        return self.moisture_buffered or self.inventory_buffered
 
     def __repr__(self) -> str:
         return (
             f"UploadResult("
-            f"moisture={self.moisture_status}, "
-            f"inventory={self.inventory_status})"
+            f"moisture={self.moisture_status}{'(buf)' if self.moisture_buffered else ''}, "
+            f"inventory={self.inventory_status}{'(buf)' if self.inventory_buffered else ''})"
         )
 
 
@@ -63,8 +87,8 @@ class Uploader:
     """
     Posts `PipelineResult` data to the relevant backend services.
 
-    Both uploads are fire-and-forget with respect to the pipeline cycle —
-    failures are logged but do not abort the scheduler.
+    When a `BufferStore` is provided, network failures and 5xx responses
+    cause the payload to be buffered locally for later replay.
 
     Parameters
     ----------
@@ -74,6 +98,8 @@ class Uploader:
         `ApiClient` pointed at moisture-service.
     inventory_client
         `ApiClient` pointed at inventory-service.
+    buffer
+        Optional offline buffer.  Pass None to disable buffering.
     """
 
     def __init__(
@@ -81,72 +107,62 @@ class Uploader:
         settings: Settings,
         moisture_client: ApiClient,
         inventory_client: ApiClient,
+        buffer: Optional["BufferStore"] = None,
     ) -> None:
         self._s = settings
-        self._moisture = moisture_client
+        self._moisture  = moisture_client
         self._inventory = inventory_client
+        self._buffer    = buffer
+
+    # ── Public ────────────────────────────────────────────────────────────────
 
     async def upload(self, result: PipelineResult) -> UploadResult:
         """
-        Post to moisture-service (if thermal data available) and
-        inventory-service (if pile was detected) concurrently.
+        Post to moisture-service and inventory-service concurrently.
 
-        Never raises — all exceptions are captured into the returned
-        `UploadResult`.
+        Never raises — failures are either buffered (if buffer is set)
+        or logged as errors.
         """
         tasks = []
+        upload_result = UploadResult()
 
         if result.has_thermal and result.thermal_jpeg:
-            tasks.append(self._upload_moisture(result))
+            tasks.append(("moisture", self._upload_moisture(result, upload_result)))
         else:
-            logger.debug("Skipping moisture upload — no thermal data in this cycle")
+            logger.debug("Skipping moisture upload — no thermal data this cycle")
 
         if result.pile_detected:
-            tasks.append(self._upload_inventory(result))
+            tasks.append(("inventory", self._upload_inventory(result, upload_result)))
         else:
-            logger.debug("Skipping inventory upload — no pile detected in this cycle")
+            logger.debug("Skipping inventory upload — no pile detected this cycle")
 
         if not tasks:
             logger.warning(
-                "No upload targets for this cycle — "
+                "No upload targets this cycle — "
                 "pile not detected and no thermal data available"
             )
-            return UploadResult()
+            return upload_result
 
-        outcomes = await asyncio.gather(*tasks, return_exceptions=True)
-
-        upload_result = UploadResult()
-        for outcome in outcomes:
-            if isinstance(outcome, dict):
-                if "moisture_status" in outcome:
-                    upload_result.moisture_status = outcome["moisture_status"]
-                    upload_result.moisture_error  = outcome.get("moisture_error")
-                elif "inventory_status" in outcome:
-                    upload_result.inventory_status = outcome["inventory_status"]
-                    upload_result.inventory_error  = outcome.get("inventory_error")
-            elif isinstance(outcome, Exception):
-                logger.error("Upload task raised exception", extra={"error": str(outcome)})
+        await asyncio.gather(*(coro for _, coro in tasks), return_exceptions=True)
 
         logger.info(
             "Upload cycle complete",
             extra={
-                "moisture_status":  upload_result.moisture_status,
-                "inventory_status": upload_result.inventory_status,
-                "success":          upload_result.success,
+                "moisture_status":   upload_result.moisture_status,
+                "moisture_buffered": upload_result.moisture_buffered,
+                "inventory_status":  upload_result.inventory_status,
+                "inventory_buffered":upload_result.inventory_buffered,
             },
         )
         return upload_result
 
     # ── moisture-service ──────────────────────────────────────────────────────
 
-    async def _upload_moisture(self, result: PipelineResult) -> dict:
-        """POST thermal JPEG + metadata to moisture-service /predict."""
+    async def _upload_moisture(
+        self, result: PipelineResult, out: UploadResult
+    ) -> None:
         files = {
-            "image": (
-                "thermal.jpg",
-                result.thermal_jpeg,
-                "image/jpeg",
-            )
+            "image": ("thermal.jpg", result.thermal_jpeg, "image/jpeg")
         }
         data: dict[str, str] = {
             "pile_id": result.pile_id,
@@ -155,24 +171,24 @@ class Uploader:
         if result.camera_id_thermal:
             data["camera_id"] = result.camera_id_thermal
 
+        sensor_readings_json: Optional[str] = None
         if self._s.has_ambient_sensors():
-            sensor_reading: dict = {
-                "temperature_c":          self._s.ambient_temp_c,
-                "relative_humidity_pct":  self._s.ambient_humidity_pct,
+            reading: dict = {
+                "temperature_c":         self._s.ambient_temp_c,
+                "relative_humidity_pct": self._s.ambient_humidity_pct,
+                "timestamp":             result.captured_at.isoformat(),
             }
             if self._s.ambient_pressure_hpa is not None:
-                sensor_reading["atmospheric_pressure_hpa"] = self._s.ambient_pressure_hpa
-            # Inject the pipeline timestamp as the reading timestamp
-            sensor_reading["timestamp"] = result.captured_at.isoformat()
-            data["sensor_readings"] = json.dumps([sensor_reading])
+                reading["atmospheric_pressure_hpa"] = self._s.ambient_pressure_hpa
+            sensor_readings_json = json.dumps([reading])
+            data["sensor_readings"] = sensor_readings_json
 
         try:
             resp = await self._moisture.post_multipart("/predict", files=files, data=data)
-            status = resp.status_code
+            out.moisture_status = resp.status_code
 
-            if 200 <= status < 300:
-                body = resp.json()
-                pred = body.get("data", {})
+            if 200 <= resp.status_code < 300:
+                pred = resp.json().get("data", {})
                 logger.info(
                     "Moisture prediction received",
                     extra={
@@ -182,65 +198,149 @@ class Uploader:
                         "pile_id":      result.pile_id,
                     },
                 )
-            else:
+                return
+
+            if resp.status_code in _BUFFER_ON_STATUS:
                 logger.warning(
-                    "Moisture API returned error",
-                    extra={"status": status, "body": resp.text[:300]},
+                    "Moisture API returned server error — buffering",
+                    extra={"status": resp.status_code},
+                )
+                out.moisture_error    = f"HTTP {resp.status_code}"
+                out.moisture_buffered = self._buffer_moisture(
+                    result, sensor_readings_json
+                )
+            else:
+                logger.error(
+                    "Moisture API returned non-retriable error",
+                    extra={"status": resp.status_code, "body": resp.text[:200]},
                 )
 
-            return {"moisture_status": status}
-
         except Exception as exc:
-            logger.error("Moisture upload failed", extra={"error": str(exc)})
-            return {"moisture_status": None, "moisture_error": str(exc)}
+            error = str(exc)
+            logger.warning(
+                "Moisture upload failed — buffering",
+                extra={"error": error, "pile_id": result.pile_id},
+            )
+            out.moisture_error    = error
+            out.moisture_buffered = self._buffer_moisture(result, sensor_readings_json)
+
+    def _buffer_moisture(
+        self,
+        result: PipelineResult,
+        sensor_readings_json: Optional[str],
+    ) -> bool:
+        """Persist a moisture payload to the local buffer. Returns True on success."""
+        if not self._buffer:
+            return False
+        from ..buffer.store import BufferedEntry
+        meta = {
+            "camera_id":      result.camera_id_thermal,
+            "sensor_readings": sensor_readings_json,
+        }
+        entry = BufferedEntry(
+            upload_type="moisture",
+            pile_id=result.pile_id,
+            site_id=result.site_id,
+            captured_at=result.captured_at.isoformat(),
+            payload_json=json.dumps(meta),
+            thermal_jpeg=result.thermal_jpeg,
+        )
+        try:
+            row_id = self._buffer.enqueue(entry)
+            logger.info(
+                "Moisture upload buffered offline",
+                extra={"buffer_id": row_id, "pile_id": result.pile_id},
+            )
+            return True
+        except Exception as buf_exc:
+            logger.error(
+                "Failed to buffer moisture upload",
+                extra={"error": str(buf_exc)},
+            )
+            return False
 
     # ── inventory-service ─────────────────────────────────────────────────────
 
-    async def _upload_inventory(self, result: PipelineResult) -> dict:
-        """PUT volume measurement to inventory-service /piles/:id/volume."""
+    async def _upload_inventory(
+        self, result: PipelineResult, out: UploadResult
+    ) -> None:
         payload: dict = {
-            "volumeM3":         result.volume_m3_est,
-            "heightM":          result.height_m_est if result.height_m_est > 0 else None,
-            "surfaceAreaM2":    result.surface_area_m2_est if result.surface_area_m2_est > 0 else None,
-            "confidenceScore":  result.segmentation_confidence if result.segmentation_confidence > 0 else None,
+            "volumeM3":          result.volume_m3_est,
+            "heightM":           result.height_m_est   if result.height_m_est   > 0 else None,
+            "surfaceAreaM2":     result.surface_area_m2_est if result.surface_area_m2_est > 0 else None,
+            "confidenceScore":   result.segmentation_confidence if result.segmentation_confidence > 0 else None,
             "measurementSource": "camera",
-            "cameraId":         result.camera_id_rgb,
-            "time":             result.captured_at.isoformat(),
-            "rawImagePath":     None,
+            "cameraId":          result.camera_id_rgb,
+            "time":              result.captured_at.isoformat(),
+            "rawImagePath":      None,
+            "estimatedTonnes":   None,
         }
-
-        # Estimate tonnes if bulk density is configured
-        if self._s.seg_pixel_to_m2 and result.volume_m3_est > 0:
-            # We can't infer density here; leave estimatedTonnes null unless
-            # the pile has a known bulkDensityT_m3 registered in inventory-service.
-            payload["estimatedTonnes"] = None
-
         path = f"/piles/{result.pile_id}/volume"
 
         try:
             resp = await self._inventory.put_json(path, payload)
-            status = resp.status_code
+            out.inventory_status = resp.status_code
 
-            if 200 <= status < 300:
-                body = resp.json()
-                data = body.get("data", {})
+            if 200 <= resp.status_code < 300:
+                data = resp.json().get("data", {})
                 logger.info(
                     "Inventory volume recorded",
                     extra={
-                        "pile_id":     result.pile_id,
-                        "volume_m3":   data.get("volumeM3"),
-                        "height_m":    data.get("heightM"),
-                        "confidence":  data.get("confidenceScore"),
+                        "pile_id":    result.pile_id,
+                        "volume_m3":  data.get("volumeM3"),
+                        "height_m":   data.get("heightM"),
+                        "confidence": data.get("confidenceScore"),
                     },
                 )
-            else:
+                return
+
+            if resp.status_code in _BUFFER_ON_STATUS:
                 logger.warning(
-                    "Inventory API returned error",
-                    extra={"status": status, "body": resp.text[:300]},
+                    "Inventory API returned server error — buffering",
+                    extra={"status": resp.status_code},
+                )
+                out.inventory_error    = f"HTTP {resp.status_code}"
+                out.inventory_buffered = self._buffer_inventory(payload, result)
+            else:
+                logger.error(
+                    "Inventory API returned non-retriable error",
+                    extra={"status": resp.status_code, "body": resp.text[:200]},
                 )
 
-            return {"inventory_status": status}
-
         except Exception as exc:
-            logger.error("Inventory upload failed", extra={"error": str(exc)})
-            return {"inventory_status": None, "inventory_error": str(exc)}
+            error = str(exc)
+            logger.warning(
+                "Inventory upload failed — buffering",
+                extra={"error": error, "pile_id": result.pile_id},
+            )
+            out.inventory_error    = error
+            out.inventory_buffered = self._buffer_inventory(payload, result)
+
+    def _buffer_inventory(
+        self, payload: dict, result: PipelineResult
+    ) -> bool:
+        """Persist an inventory payload to the local buffer. Returns True on success."""
+        if not self._buffer:
+            return False
+        from ..buffer.store import BufferedEntry
+        entry = BufferedEntry(
+            upload_type="inventory",
+            pile_id=result.pile_id,
+            site_id=result.site_id,
+            captured_at=result.captured_at.isoformat(),
+            payload_json=json.dumps(payload),
+            thermal_jpeg=None,
+        )
+        try:
+            row_id = self._buffer.enqueue(entry)
+            logger.info(
+                "Inventory upload buffered offline",
+                extra={"buffer_id": row_id, "pile_id": result.pile_id},
+            )
+            return True
+        except Exception as buf_exc:
+            logger.error(
+                "Failed to buffer inventory upload",
+                extra={"error": str(buf_exc)},
+            )
+            return False

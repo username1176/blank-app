@@ -1,15 +1,25 @@
 """
 Interval runner — runs the processing pipeline on a fixed schedule.
 
-Design goals:
-  - Never overlap runs: if a run takes longer than the interval, the next
-    run is deferred until the current one finishes (rather than stacking up).
-  - Accurate timing: the sleep duration accounts for pipeline execution time
-    so the effective interval stays close to the configured value.
-  - Graceful shutdown: `stop()` signals the loop to exit cleanly after the
-    current iteration completes.
-  - Health file: writes /tmp/edge_health.json after every cycle so the Docker
-    HEALTHCHECK can verify the process is running.
+Each cycle:
+  1. (Optional) BufferSyncer.sync_pending() — drain any buffered uploads
+     before capturing a new frame, so cloud receives data in arrival order.
+  2. capture() — grab the latest frame from both cameras.
+  3. pipeline.run() — segmentation + thermal analysis (in thread pool).
+  4. uploader.upload() — post live; buffer on failure.
+
+Timing:
+  The sleep between cycles accounts for actual execution time so the
+  *start-to-start* interval stays close to `interval_s`.  If a cycle
+  overruns the interval, the next one starts immediately (no overlap —
+  cycles are sequential).
+
+Health file:
+  Writes /tmp/edge_health.json after every cycle for the Docker HEALTHCHECK.
+
+Graceful shutdown:
+  `stop()` sets an asyncio.Event that the sleep wait checks.  The current
+  cycle finishes normally, then the loop exits.
 """
 
 from __future__ import annotations
@@ -19,11 +29,14 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Awaitable, Callable, Optional
+from typing import Awaitable, Callable, Optional, TYPE_CHECKING
 
 from ..capture.manager import CaptureResult, StreamManager
 from ..processing.pipeline import PipelineResult, ProcessingPipeline
 from ..api.uploader import Uploader
+
+if TYPE_CHECKING:
+    from ..buffer.syncer import BufferSyncer
 
 logger = logging.getLogger(__name__)
 
@@ -32,21 +45,25 @@ _HEALTH_FILE = Path("/tmp/edge_health.json")
 
 class IntervalRunner:
     """
-    Runs the capture → process → upload cycle on a configurable interval.
+    Periodic capture → sync → process → upload loop.
 
     Parameters
     ----------
     interval_s
-        Target time between the *start* of successive runs (seconds).
+        Target time between the *start* of successive cycles (seconds).
     stream_manager
         Provides frames via `capture()`.
     pipeline
-        Converts frames into `PipelineResult`.
+        Converts frames into `PipelineResult` (CPU-bound, runs in executor).
     uploader
         Posts results to the backend APIs.
+    syncer
+        Optional `BufferSyncer`.  When provided, a sync pass runs at the
+        *beginning* of each cycle so buffered data is delivered in order
+        before fresh data.
     on_result
-        Optional callback invoked after each successful `pipeline.run()`.
-        Called before the upload so the caller can inspect or mutate the result.
+        Optional async callback invoked after `pipeline.run()` and before
+        `uploader.upload()`.  Useful for testing / custom side-effects.
     """
 
     def __init__(
@@ -55,34 +72,38 @@ class IntervalRunner:
         stream_manager: StreamManager,
         pipeline: ProcessingPipeline,
         uploader: Uploader,
+        syncer: Optional["BufferSyncer"] = None,
         on_result: Optional[Callable[[PipelineResult], Awaitable[None]]] = None,
     ) -> None:
-        self._interval_s = interval_s
+        self._interval_s    = interval_s
         self._stream_manager = stream_manager
-        self._pipeline = pipeline
-        self._uploader = uploader
-        self._on_result = on_result
+        self._pipeline       = pipeline
+        self._uploader       = uploader
+        self._syncer         = syncer
+        self._on_result      = on_result
 
-        self._running = False
-        self._stop_event = asyncio.Event()
+        self._running        = False
+        self._stop_event     = asyncio.Event()
 
-        # Counters for health reporting
-        self._cycles_total: int = 0
-        self._cycles_ok: int = 0
-        self._cycles_failed: int = 0
-        self._last_run_at: float = 0.0
-        self._last_run_ms: float = 0.0
+        # Counters
+        self._cycles_total:    int   = 0
+        self._cycles_ok:       int   = 0
+        self._cycles_failed:   int   = 0
+        self._synced_total:    int   = 0
+        self._buffered_total:  int   = 0
+        self._last_run_at:     float = 0.0
+        self._last_run_ms:     float = 0.0
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     async def run_forever(self) -> None:
-        """
-        Start the periodic loop.  Blocks until `stop()` is called or the
-        process receives SIGTERM/SIGINT.
-        """
+        """Start the loop. Blocks until `stop()` is called."""
         self._running = True
         self._stop_event.clear()
-        logger.info("Interval runner started", extra={"interval_s": self._interval_s})
+        logger.info(
+            "Interval runner started",
+            extra={"interval_s": self._interval_s, "sync_enabled": self._syncer is not None},
+        )
 
         while not self._stop_event.is_set():
             cycle_start = time.monotonic()
@@ -109,18 +130,15 @@ class IntervalRunner:
                 logger.warning(
                     "Cycle overran interval",
                     extra={
-                        "elapsed_s":    round(elapsed, 2),
-                        "interval_s":   self._interval_s,
-                        "overrun_s":    round(elapsed - self._interval_s, 2),
+                        "elapsed_s":  round(elapsed, 2),
+                        "interval_s": self._interval_s,
+                        "overrun_s":  round(elapsed - self._interval_s, 2),
                     },
                 )
             else:
                 logger.debug(
-                    "Cycle complete — sleeping",
-                    extra={
-                        "elapsed_s": round(elapsed, 2),
-                        "sleep_s":   round(sleep_s, 2),
-                    },
+                    "Cycle done — sleeping",
+                    extra={"elapsed_s": round(elapsed, 2), "sleep_s": round(sleep_s, 2)},
                 )
 
             try:
@@ -131,15 +149,17 @@ class IntervalRunner:
         logger.info(
             "Interval runner stopped",
             extra={
-                "cycles_total":  self._cycles_total,
-                "cycles_ok":     self._cycles_ok,
-                "cycles_failed": self._cycles_failed,
+                "cycles_total":   self._cycles_total,
+                "cycles_ok":      self._cycles_ok,
+                "cycles_failed":  self._cycles_failed,
+                "synced_total":   self._synced_total,
+                "buffered_total": self._buffered_total,
             },
         )
         self._running = False
 
     def stop(self) -> None:
-        """Signal the loop to exit after the current cycle."""
+        """Signal the loop to exit cleanly after the current cycle."""
         self._stop_event.set()
         logger.info("Stop requested — runner will exit after current cycle")
 
@@ -150,6 +170,8 @@ class IntervalRunner:
             "cycles_total":   self._cycles_total,
             "cycles_ok":      self._cycles_ok,
             "cycles_failed":  self._cycles_failed,
+            "synced_total":   self._synced_total,
+            "buffered_total": self._buffered_total,
             "last_run_at":    self._last_run_at,
             "last_run_ms":    round(self._last_run_ms, 1),
         }
@@ -157,24 +179,46 @@ class IntervalRunner:
     # ── Private ───────────────────────────────────────────────────────────────
 
     async def _run_cycle(self) -> None:
-        """One capture → process → upload iteration."""
+        """One sync → capture → process → upload iteration."""
+
+        # ── 1. Sync buffered data first (in-order delivery) ───────────────────
+        if self._syncer is not None:
+            try:
+                sync_result = await self._syncer.sync_pending()
+                if not sync_result.skipped:
+                    self._synced_total += sync_result.synced
+                    if sync_result.synced or sync_result.failed:
+                        logger.info(
+                            "Buffer sync",
+                            extra={
+                                "synced":   sync_result.synced,
+                                "failed":   sync_result.failed,
+                                "released": sync_result.released,
+                            },
+                        )
+            except Exception as exc:
+                logger.warning(
+                    "Buffer sync step raised unexpectedly",
+                    extra={"error": str(exc)},
+                )
+
+        # ── 2. Capture ────────────────────────────────────────────────────────
         capture = self._stream_manager.capture()
         stream_health = self._stream_manager.health()
 
         if not capture.has_rgb and not capture.has_thermal:
             logger.warning(
-                "No frames available from any stream — skipping cycle",
+                "No frames from any stream — skipping pipeline",
                 extra={"stream_health": stream_health},
             )
             return
 
         if not capture.has_rgb:
-            logger.warning("RGB frame not available; segmentation will be skipped")
+            logger.warning("RGB unavailable; segmentation will be skipped")
         if not capture.has_thermal:
-            logger.debug("Thermal frame not available; thermal analysis will be skipped")
+            logger.debug("Thermal unavailable; thermal analysis will be skipped")
 
-        # Run synchronous CV processing in a thread pool so it doesn't block
-        # the event loop (important if async tasks are sharing the loop).
+        # ── 3. Process (CPU-bound: run in thread pool) ─────────────────────────
         loop = asyncio.get_running_loop()
         result: PipelineResult = await loop.run_in_executor(
             None, self._pipeline.run, capture
@@ -183,7 +227,14 @@ class IntervalRunner:
         if self._on_result:
             await self._on_result(result)
 
-        await self._uploader.upload(result)
+        # ── 4. Upload (live or buffer) ─────────────────────────────────────────
+        upload_result = await self._uploader.upload(result)
+
+        if upload_result.any_buffered:
+            self._buffered_total += sum([
+                upload_result.moisture_buffered,
+                upload_result.inventory_buffered,
+            ])
 
     def _write_health(self) -> None:
         try:
@@ -193,6 +244,8 @@ class IntervalRunner:
                     "cycles_total":   self._cycles_total,
                     "cycles_ok":      self._cycles_ok,
                     "cycles_failed":  self._cycles_failed,
+                    "synced_total":   self._synced_total,
+                    "buffered_total": self._buffered_total,
                     "last_run_ms":    round(self._last_run_ms, 1),
                 })
             )

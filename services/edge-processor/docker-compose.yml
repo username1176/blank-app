@@ -31,6 +31,11 @@ services:
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
 
     volumes:
+      # Persistent offline buffer — MUST survive container restarts to preserve
+      # buffered readings from offline periods.  Use a named volume (shown here)
+      # or bind-mount a path on the Jetson's eMMC / NVMe:
+      #   - /opt/edge/data:/data
+      - buffer_data:/data
       # Bind-mount for debug frames (optional — only active when DEBUG_FRAME_DIR is set)
       - debug_frames:/tmp/debug_frames
 
@@ -59,4 +64,6 @@ services:
         max-file: "5"
 
 volumes:
+  # SQLite offline buffer — persists across container restarts and redeployments
+  buffer_data:
   debug_frames:
