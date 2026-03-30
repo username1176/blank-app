@@ -1,0 +1,66 @@
+# =============================================================================
+# Flyway configuration — Warehouse Materials Intelligence Platform
+# =============================================================================
+# Sensitive values (url, user, password) are read from environment variables
+# so this file is safe to commit.  Copy .env.example to .env and fill in
+# the real credentials for local development.
+#
+# Flyway docs: https://documentation.red-gate.com/flyway/flyway-cli-and-api/configuration/parameters
+
+[flyway]
+# JDBC connection — override via FLYWAY_URL env var or -url flag
+url      = "${FLYWAY_URL}"
+user     = "${FLYWAY_USER}"
+password = "${FLYWAY_PASSWORD}"
+
+# Migration locations
+# "filesystem:" prefix resolves relative to the project root.
+# Add "classpath:db/migration" here when embedding Flyway in a JVM service.
+locations = [
+    "filesystem:db/migrations",
+]
+
+# Schema managed by Flyway
+schemas       = ["public"]
+defaultSchema = "public"
+
+# Encoding of migration files
+encoding = "UTF-8"
+
+# Allow migrations to run against a database that already has objects
+# (set to true when adopting Flyway on an existing schema).
+baselineOnMigrate = false
+
+# Reject out-of-order migrations — enforces a linear history in CI.
+outOfOrder = false
+
+# Validate checksums of applied migrations on every run.
+validateOnMigrate = true
+
+# Keep a full history of applied migrations in the flyway_schema_history table.
+# Set to false only in ephemeral test environments.
+cleanDisabled = false
+
+# Placeholders substituted in SQL files as ${key}
+[flyway.placeholders]
+appUser = "api_user"
+
+# =============================================================================
+# Environment overrides
+# =============================================================================
+# Flyway reads [environments.<name>] blocks when -environment=<name> is passed.
+
+[environments.local]
+url      = "jdbc:postgresql://localhost:5432/warehouse_dev"
+user     = "postgres"
+password = "postgres"
+
+[environments.test]
+url      = "jdbc:postgresql://localhost:5432/warehouse_test"
+user     = "postgres"
+password = "postgres"
+
+[environments.staging]
+url      = "${STAGING_DB_URL}"
+user     = "${STAGING_DB_USER}"
+password = "${STAGING_DB_PASSWORD}"
