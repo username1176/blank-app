@@ -4,6 +4,7 @@ import { useUiStore }           from "../store/uiStore";
 import { fetchSites }           from "../api/sites";
 import { fetchMoistureReadings } from "../api/moisture";
 import MoistureChart            from "../components/charts/MoistureChart";
+import MoistureHeatmap          from "../components/moisture/MoistureHeatmap";
 import { PageLoader }           from "../components/ui/LoadingSpinner";
 import type { MoistureTimeRange } from "../types";
 
@@ -56,8 +57,9 @@ export default function Moisture() {
   } : null;
 
   return (
-    <div className="space-y-4">
-      {/* Controls */}
+    <div className="space-y-6">
+
+      {/* ── Controls ─────────────────────────────────────────────────────────── */}
       <div className="flex flex-wrap items-center gap-3">
         <select
           value={selectedSiteId}
@@ -92,8 +94,8 @@ export default function Moisture() {
         )}
       </div>
 
+      {/* ── Time-series chart + stats ─────────────────────────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-        {/* Chart */}
         <div className="lg:col-span-3 bg-white rounded-xl border border-slate-200 shadow-sm p-5">
           <h2 className="text-sm font-semibold text-slate-700 mb-4">
             Moisture &amp; Temperature — {timeRange}
@@ -107,7 +109,6 @@ export default function Moisture() {
           )}
         </div>
 
-        {/* Stats panel */}
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
           <h2 className="text-sm font-semibold text-slate-700 mb-3">Statistics</h2>
           {stats ? (
@@ -123,6 +124,14 @@ export default function Moisture() {
           )}
         </div>
       </div>
+
+      {/* ── Pile zone heatmap ─────────────────────────────────────────────────── */}
+      {selectedSiteId && (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+          <MoistureHeatmap siteId={selectedSiteId} />
+        </div>
+      )}
+
     </div>
   );
 }

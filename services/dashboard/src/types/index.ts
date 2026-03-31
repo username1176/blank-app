@@ -65,7 +65,7 @@ export interface InventoryFilters {
 
 // ── Moisture ───────────────────────────────────────────────────────────────────
 
-export type MoistureSource = "sensor" | "edge_processor";
+export type MoistureSource = "sensor" | "edge_processor" | "ml_model";
 
 export interface MoistureReading {
   id:                  string;
@@ -84,6 +84,33 @@ export interface MoistureStats {
   max:  number;
   avg:  number;
   last: number;
+}
+
+/**
+ * A named pile zone in a warehouse floor plan.
+ * row/col are 0-indexed grid coordinates; width/height default to 1.
+ */
+export interface PileZone {
+  id:      string;
+  siteId:  string;
+  label:   string;   // e.g. "A1", "Bay 3"
+  row:     number;
+  col:     number;
+  width?:  number;
+  height?: number;
+}
+
+/**
+ * Real-time (or predicted) moisture state for a single pile zone.
+ * confidenceScore is 0–1; 1 = direct sensor reading, <1 = ML prediction.
+ */
+export interface MoisturePrediction {
+  zoneId:          string;
+  siteId:          string;
+  moisturePercent: number;
+  confidenceScore: number;
+  predictedAt:     string;
+  source:          MoistureSource;
 }
 
 // ── Alerts ─────────────────────────────────────────────────────────────────────
