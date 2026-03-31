@@ -134,6 +134,16 @@ export interface AlertSettings {
   thresholds:   AlertThreshold[];
 }
 
+// ── Inventory history ──────────────────────────────────────────────────────────
+
+export interface InventorySnapshot {
+  date:              string;  // "YYYY-MM-DD"
+  siteId:            string;
+  totalVolumeCubicM: number;
+  totalQuantity:     number;
+  itemCount:         number;
+}
+
 // ── Pagination ─────────────────────────────────────────────────────────────────
 
 export interface PaginatedResponse<T> {
