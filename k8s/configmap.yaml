@@ -1,0 +1,94 @@
+# =============================================================================
+# Shared non-secret configuration for all warehouse-platform services.
+# Sensitive values (credentials, signing keys) live in secret.yaml.
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: warehouse-config
+  namespace: warehouse
+  labels:
+    app.kubernetes.io/part-of: warehouse-platform
+data:
+  # ── Node environment ────────────────────────────────────────────────────────
+  NODE_ENV: "production"
+  LOG_LEVEL: "info"
+
+  # ── Database (host/port/name only — credentials are in the Secret) ──────────
+  DB_HOST: "timescaledb.warehouse.svc.cluster.local"
+  DB_PORT: "5432"
+  DB_NAME: "warehouse_prod"
+  DB_POOL_MIN: "2"
+  DB_POOL_MAX: "20"
+  DB_IDLE_TIMEOUT_MS: "30000"
+  DB_CONNECTION_TIMEOUT_MS: "5000"
+
+  # ── Kafka ────────────────────────────────────────────────────────────────────
+  KAFKA_BROKERS: "kafka-headless.kafka.svc.cluster.local:9092"
+  KAFKA_ALERTS_TOPIC: "alerts"
+  KAFKA_ENABLED: "true"
+
+  # ── Redis ────────────────────────────────────────────────────────────────────
+  REDIS_URL: "redis://redis-master.redis.svc.cluster.local:6379"
+
+  # ── MQTT ─────────────────────────────────────────────────────────────────────
+  MQTT_URL: "mqtt://mosquitto.warehouse.svc.cluster.local:1883"
+  MQTT_TOPIC_PREFIX: "warehouse"
+  MQTT_ENABLED: "true"
+  MQTT_QOS: "1"
+  MQTT_RECONNECT_MS: "5000"
+
+  # ── JWT (non-secret settings) ────────────────────────────────────────────────
+  JWT_ACCESS_TTL: "15m"
+  JWT_REFRESH_TTL: "7d"
+  JWT_VERIFY_AT_GATEWAY: "true"
+  JWT_PUBLIC_PATHS: "/health,/auth/login,/auth/refresh"
+
+  # ── API Gateway upstreams ────────────────────────────────────────────────────
+  INVENTORY_SERVICE_URL: "http://inventory-service.warehouse.svc.cluster.local:3001"
+  MOISTURE_SERVICE_URL: "http://moisture-service.warehouse.svc.cluster.local:3002"
+  ENVIRONMENT_SERVICE_URL: "http://environment-service.warehouse.svc.cluster.local:3003"
+  ALERT_SERVICE_URL: "http://alert-service.warehouse.svc.cluster.local:3004"
+
+  # ── CORS ─────────────────────────────────────────────────────────────────────
+  # Adjust to your actual production domain(s).
+  CORS_ORIGINS: "https://app.warehouse-platform.io"
+  CORS_ALLOW_CREDENTIALS: "true"
+
+  # ── Rate limiting ─────────────────────────────────────────────────────────────
+  RATE_LIMIT_WINDOW_MS: "60000"
+  RATE_LIMIT_GLOBAL_MAX: "600"
+  RATE_LIMIT_INVENTORY_MAX: "200"
+  RATE_LIMIT_MOISTURE_MAX: "60"
+  RATE_LIMIT_ENVIRONMENT_MAX: "300"
+  RATE_LIMIT_ALERTS_MAX: "200"
+  RATE_LIMIT_AUTH_MAX: "20"
+  RATE_LIMIT_AUTH_WINDOW_MS: "900000"
+
+  # ── Notifications (master switch) ─────────────────────────────────────────────
+  NOTIFICATIONS_ENABLED: "true"
+  SENDGRID_FROM_EMAIL: "alerts@warehouse-platform.io"
+  SENDGRID_FROM_NAME: "Warehouse Platform Alerts"
+  TWILIO_FROM_NUMBER: "+15550000000"
+
+  # ── Moisture model ────────────────────────────────────────────────────────────
+  MODEL_PATH: "/models/moisture/model.pt"
+  MODEL_CHECKPOINT_DIR: "/checkpoints/moisture"
+  MODEL_INPUT_SIZE: "224"
+  MODEL_CONFIDENCE_THRESHOLD: "0.5"
+  MOISTURE_ALERT_THRESHOLD_PCT: "15.0"
+  TORCH_NUM_THREADS: "2"
+
+  # ── Anomaly detection ──────────────────────────────────────────────────────────
+  ANOMALY_ENABLED: "true"
+  ANOMALY_BASELINE_WINDOW_HOURS: "24"
+  ANOMALY_MIN_READINGS: "10"
+  ANOMALY_WARNING_SIGMA: "2.0"
+  ANOMALY_CRITICAL_SIGMA: "3.0"
+  ANOMALY_COOLDOWN_MINUTES: "30"
+
+  # ── Inventory alert defaults ───────────────────────────────────────────────────
+  ALERT_POLL_INTERVAL_MS: "60000"
+  ALERT_DEFAULT_THRESHOLD_PCT: "15"
+  ALERT_DEFAULT_LOOKBACK_MINUTES: "60"
+  ALERT_DEFAULT_COOLDOWN_MINUTES: "30"

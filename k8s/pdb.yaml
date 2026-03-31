@@ -1,0 +1,72 @@
+# =============================================================================
+# PodDisruptionBudgets — ensure at least one replica survives node drains
+# and voluntary disruptions (cluster upgrades, scaling events).
+# =============================================================================
+
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api-gateway-pdb
+  namespace: warehouse
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: api-gateway
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: inventory-service-pdb
+  namespace: warehouse
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: inventory-service
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: moisture-service-pdb
+  namespace: warehouse
+spec:
+  # moisture-service may run a single replica in low-traffic environments;
+  # use maxUnavailable so a drain is not permanently blocked.
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: moisture-service
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: environment-service-pdb
+  namespace: warehouse
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: environment-service
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: alert-service-pdb
+  namespace: warehouse
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: alert-service
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: dashboard-pdb
+  namespace: warehouse
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: dashboard

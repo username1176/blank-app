@@ -1,0 +1,189 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inventory-service
+  namespace: warehouse
+  labels:
+    app: inventory-service
+    app.kubernetes.io/name: inventory-service
+    app.kubernetes.io/part-of: warehouse-platform
+    app.kubernetes.io/version: "1.0.0"
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: inventory-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: inventory-service
+        app.kubernetes.io/name: inventory-service
+        app.kubernetes.io/part-of: warehouse-platform
+    spec:
+      serviceAccountName: inventory-service
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: inventory-service
+              topologyKey: kubernetes.io/hostname
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: inventory-service
+      containers:
+        - name: inventory-service
+          image: ghcr.io/your-org/warehouse/inventory-service:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 3001
+              protocol: TCP
+          env:
+            - name: PORT
+              value: "3001"
+            - name: NODE_ENV
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: NODE_ENV
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: LOG_LEVEL
+            - name: DB_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: DB_HOST
+            - name: DB_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: DB_PORT
+            - name: DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: DB_NAME
+            - name: DB_POOL_MIN
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: DB_POOL_MIN
+            - name: DB_POOL_MAX
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: DB_POOL_MAX
+            - name: DB_IDLE_TIMEOUT_MS
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: DB_IDLE_TIMEOUT_MS
+            - name: DB_CONNECTION_TIMEOUT_MS
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: DB_CONNECTION_TIMEOUT_MS
+            - name: KAFKA_BROKERS
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: KAFKA_BROKERS
+            - name: KAFKA_ALERTS_TOPIC
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: KAFKA_ALERTS_TOPIC
+            - name: KAFKA_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: KAFKA_ENABLED
+            - name: ALERT_POLL_INTERVAL_MS
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: ALERT_POLL_INTERVAL_MS
+            - name: ALERT_DEFAULT_THRESHOLD_PCT
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: ALERT_DEFAULT_THRESHOLD_PCT
+            - name: ALERT_DEFAULT_LOOKBACK_MINUTES
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: ALERT_DEFAULT_LOOKBACK_MINUTES
+            - name: ALERT_DEFAULT_COOLDOWN_MINUTES
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: ALERT_DEFAULT_COOLDOWN_MINUTES
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: warehouse-secrets
+                  key: DB_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: warehouse-secrets
+                  key: DB_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: warehouse-secrets
+                  key: JWT_SECRET
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

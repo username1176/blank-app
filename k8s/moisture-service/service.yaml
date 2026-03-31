@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: moisture-service
+  namespace: warehouse
+  labels:
+    app: moisture-service
+    app.kubernetes.io/part-of: warehouse-platform
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: moisture-service
+  namespace: warehouse
+  labels:
+    app: moisture-service
+    app.kubernetes.io/name: moisture-service
+    app.kubernetes.io/part-of: warehouse-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: moisture-service
+  ports:
+    - name: http
+      port: 3002
+      targetPort: http
+      protocol: TCP

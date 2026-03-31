@@ -1,0 +1,224 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: environment-service
+  namespace: warehouse
+  labels:
+    app: environment-service
+    app.kubernetes.io/name: environment-service
+    app.kubernetes.io/part-of: warehouse-platform
+    app.kubernetes.io/version: "1.0.0"
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: environment-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: environment-service
+        app.kubernetes.io/name: environment-service
+        app.kubernetes.io/part-of: warehouse-platform
+    spec:
+      serviceAccountName: environment-service
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: environment-service
+              topologyKey: kubernetes.io/hostname
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: environment-service
+      containers:
+        - name: environment-service
+          image: ghcr.io/your-org/warehouse/environment-service:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 3003
+              protocol: TCP
+          env:
+            - name: PORT
+              value: "3003"
+            - name: NODE_ENV
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: NODE_ENV
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: LOG_LEVEL
+            - name: DB_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: DB_HOST
+            - name: DB_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: DB_PORT
+            - name: DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: DB_NAME
+            - name: DB_POOL_MIN
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: DB_POOL_MIN
+            - name: DB_POOL_MAX
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: DB_POOL_MAX
+            - name: DB_IDLE_TIMEOUT_MS
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: DB_IDLE_TIMEOUT_MS
+            - name: DB_CONNECTION_TIMEOUT_MS
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: DB_CONNECTION_TIMEOUT_MS
+            - name: KAFKA_BROKERS
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: KAFKA_BROKERS
+            - name: KAFKA_ALERTS_TOPIC
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: KAFKA_ALERTS_TOPIC
+            - name: KAFKA_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: KAFKA_ENABLED
+            - name: MQTT_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: MQTT_URL
+            - name: MQTT_TOPIC_PREFIX
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: MQTT_TOPIC_PREFIX
+            - name: MQTT_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: MQTT_ENABLED
+            - name: MQTT_QOS
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: MQTT_QOS
+            - name: MQTT_RECONNECT_MS
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: MQTT_RECONNECT_MS
+            - name: ANOMALY_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: ANOMALY_ENABLED
+            - name: ANOMALY_BASELINE_WINDOW_HOURS
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: ANOMALY_BASELINE_WINDOW_HOURS
+            - name: ANOMALY_MIN_READINGS
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: ANOMALY_MIN_READINGS
+            - name: ANOMALY_WARNING_SIGMA
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: ANOMALY_WARNING_SIGMA
+            - name: ANOMALY_CRITICAL_SIGMA
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: ANOMALY_CRITICAL_SIGMA
+            - name: ANOMALY_COOLDOWN_MINUTES
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: ANOMALY_COOLDOWN_MINUTES
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: warehouse-secrets
+                  key: DB_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: warehouse-secrets
+                  key: DB_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: warehouse-secrets
+                  key: JWT_SECRET
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

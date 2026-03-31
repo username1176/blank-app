@@ -1,0 +1,215 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+  namespace: warehouse
+  labels:
+    app: api-gateway
+    app.kubernetes.io/name: api-gateway
+    app.kubernetes.io/part-of: warehouse-platform
+    app.kubernetes.io/version: "1.0.0"
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: api-gateway
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: api-gateway
+        app.kubernetes.io/name: api-gateway
+        app.kubernetes.io/part-of: warehouse-platform
+      annotations:
+        # Force pod restart when ConfigMap or Secret changes via rollout.
+        # Remove if you prefer explicit rollouts.
+        checksum/config: "placeholder-update-via-helm-or-kustomize"
+    spec:
+      serviceAccountName: api-gateway
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: api-gateway
+              topologyKey: kubernetes.io/hostname
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: api-gateway
+      containers:
+        - name: api-gateway
+          image: ghcr.io/your-org/warehouse/api-gateway:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          env:
+            - name: PORT
+              value: "3000"
+            # Non-secret config
+            - name: NODE_ENV
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: NODE_ENV
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: LOG_LEVEL
+            - name: CORS_ORIGINS
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: CORS_ORIGINS
+            - name: CORS_ALLOW_CREDENTIALS
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: CORS_ALLOW_CREDENTIALS
+            - name: JWT_ACCESS_TTL
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: JWT_ACCESS_TTL
+            - name: JWT_REFRESH_TTL
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: JWT_REFRESH_TTL
+            - name: JWT_VERIFY_AT_GATEWAY
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: JWT_VERIFY_AT_GATEWAY
+            - name: JWT_PUBLIC_PATHS
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: JWT_PUBLIC_PATHS
+            - name: REDIS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: REDIS_URL
+            - name: INVENTORY_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: INVENTORY_SERVICE_URL
+            - name: MOISTURE_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: MOISTURE_SERVICE_URL
+            - name: ENVIRONMENT_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: ENVIRONMENT_SERVICE_URL
+            - name: ALERT_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: ALERT_SERVICE_URL
+            - name: RATE_LIMIT_WINDOW_MS
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: RATE_LIMIT_WINDOW_MS
+            - name: RATE_LIMIT_GLOBAL_MAX
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: RATE_LIMIT_GLOBAL_MAX
+            - name: RATE_LIMIT_INVENTORY_MAX
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: RATE_LIMIT_INVENTORY_MAX
+            - name: RATE_LIMIT_MOISTURE_MAX
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: RATE_LIMIT_MOISTURE_MAX
+            - name: RATE_LIMIT_ENVIRONMENT_MAX
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: RATE_LIMIT_ENVIRONMENT_MAX
+            - name: RATE_LIMIT_ALERTS_MAX
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: RATE_LIMIT_ALERTS_MAX
+            - name: RATE_LIMIT_AUTH_MAX
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: RATE_LIMIT_AUTH_MAX
+            - name: RATE_LIMIT_AUTH_WINDOW_MS
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: RATE_LIMIT_AUTH_WINDOW_MS
+            # Secrets
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: warehouse-secrets
+                  key: JWT_SECRET
+            - name: JWT_REFRESH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: warehouse-secrets
+                  key: JWT_REFRESH_SECRET
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

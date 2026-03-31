@@ -1,0 +1,107 @@
+# =============================================================================
+# Ingress — Warehouse Platform
+#
+# Prerequisites:
+#   - nginx ingress controller installed in the cluster
+#       helm install ingress-nginx ingress-nginx/ingress-nginx -n ingress-nginx
+#   - cert-manager installed and a ClusterIssuer named "letsencrypt-prod"
+#       helm install cert-manager jetstack/cert-manager -n cert-manager \
+#            --set installCRDs=true
+#       kubectl apply -f clusterissuer-letsencrypt.yaml
+#
+# Replace "app.warehouse-platform.io" with your actual domain before applying.
+# =============================================================================
+
+# ── TLS certificate (cert-manager will provision and renew automatically) ─────
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: warehouse-tls
+  namespace: warehouse
+  labels:
+    app.kubernetes.io/part-of: warehouse-platform
+spec:
+  secretName: warehouse-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - app.warehouse-platform.io
+    - api.warehouse-platform.io
+---
+# ── Main ingress ──────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: warehouse-ingress
+  namespace: warehouse
+  labels:
+    app.kubernetes.io/part-of: warehouse-platform
+  annotations:
+    # Ingress class
+    kubernetes.io/ingress.class: nginx
+
+    # TLS redirect
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+
+    # HSTS (1 year, include subdomains, preload)
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "Strict-Transport-Security: max-age=31536000; includeSubDomains; preload";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      more_set_headers "X-Frame-Options: DENY";
+      more_set_headers "Referrer-Policy: strict-origin-when-cross-origin";
+      more_set_headers "Permissions-Policy: geolocation=(), microphone=(), camera=()";
+
+    # Proxy settings for long-lived connections (SSE, WebSocket upgrades)
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+
+    # Enable WebSocket support (used by dashboard hot-reload in preview envs)
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+
+    # Rate limit at the ingress edge (coarse; fine-grained limits live in gateway)
+    nginx.ingress.kubernetes.io/limit-rps: "200"
+    nginx.ingress.kubernetes.io/limit-connections: "50"
+
+    # Client IP preservation for rate-limit accuracy
+    nginx.ingress.kubernetes.io/use-forwarded-headers: "true"
+    nginx.ingress.kubernetes.io/compute-full-forwarded-for: "true"
+
+    # cert-manager will populate this secret
+    # (also declared in the Certificate resource above for explicit control)
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - app.warehouse-platform.io
+        - api.warehouse-platform.io
+      secretName: warehouse-tls
+  rules:
+    # ── Dashboard (SPA) ───────────────────────────────────────────────────────
+    - host: app.warehouse-platform.io
+      http:
+        paths:
+          # All traffic to the SPA; Nginx inside the dashboard container handles
+          # /api/* and /auth/* reverse proxy to api-gateway.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: dashboard
+                port:
+                  name: http
+
+    # ── API Gateway (direct API access, e.g. for mobile / external clients) ──
+    - host: api.warehouse-platform.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  name: http

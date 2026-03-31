@@ -1,0 +1,152 @@
+# =============================================================================
+# NetworkPolicy — Warehouse Platform
+#
+# Default-deny all ingress within the namespace; then allow only the paths
+# that are actually needed.  Egress is left unrestricted (DNS, external APIs).
+# =============================================================================
+
+# ── Default deny all intra-namespace ingress ──────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: warehouse
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+# ── api-gateway: accept from ingress-nginx and dashboard ─────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-api-gateway
+  namespace: warehouse
+spec:
+  podSelector:
+    matchLabels:
+      app: api-gateway
+  policyTypes:
+    - Ingress
+  ingress:
+    # From the Nginx ingress controller (lives in ingress-nginx namespace)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 3000
+    # From the dashboard pod (for health probes via Nginx upstream proxy)
+    - from:
+        - podSelector:
+            matchLabels:
+              app: dashboard
+      ports:
+        - protocol: TCP
+          port: 3000
+---
+# ── inventory-service: accept from api-gateway only ──────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-inventory-service
+  namespace: warehouse
+spec:
+  podSelector:
+    matchLabels:
+      app: inventory-service
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: api-gateway
+      ports:
+        - protocol: TCP
+          port: 3001
+---
+# ── moisture-service: accept from api-gateway only ───────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-moisture-service
+  namespace: warehouse
+spec:
+  podSelector:
+    matchLabels:
+      app: moisture-service
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: api-gateway
+      ports:
+        - protocol: TCP
+          port: 3002
+---
+# ── environment-service: accept from api-gateway only ────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-environment-service
+  namespace: warehouse
+spec:
+  podSelector:
+    matchLabels:
+      app: environment-service
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: api-gateway
+      ports:
+        - protocol: TCP
+          port: 3003
+---
+# ── alert-service: accept from api-gateway only ──────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-alert-service
+  namespace: warehouse
+spec:
+  podSelector:
+    matchLabels:
+      app: alert-service
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: api-gateway
+      ports:
+        - protocol: TCP
+          port: 3004
+---
+# ── dashboard: accept from ingress-nginx only ────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dashboard
+  namespace: warehouse
+spec:
+  podSelector:
+    matchLabels:
+      app: dashboard
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 80

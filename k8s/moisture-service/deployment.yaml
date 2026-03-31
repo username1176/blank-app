@@ -1,0 +1,225 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: moisture-service
+  namespace: warehouse
+  labels:
+    app: moisture-service
+    app.kubernetes.io/name: moisture-service
+    app.kubernetes.io/part-of: warehouse-platform
+    app.kubernetes.io/version: "1.0.0"
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: moisture-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # moisture-service carries in-memory model weights; allow brief overlap
+      # during rollouts so predictions are always served.
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: moisture-service
+        app.kubernetes.io/name: moisture-service
+        app.kubernetes.io/part-of: warehouse-platform
+    spec:
+      serviceAccountName: moisture-service
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000    # matches appuser uid in Dockerfile
+        runAsGroup: 1000
+        fsGroup: 1000
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: moisture-service
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: moisture-service
+          image: ghcr.io/your-org/warehouse/moisture-service:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 3002
+              protocol: TCP
+          env:
+            - name: PORT
+              value: "3002"
+            - name: ENVIRONMENT
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: NODE_ENV
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: LOG_LEVEL
+            - name: DB_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: DB_HOST
+            - name: DB_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: DB_PORT
+            - name: DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: DB_NAME
+            - name: DB_POOL_MIN
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: DB_POOL_MIN
+            - name: DB_POOL_MAX
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: DB_POOL_MAX
+            - name: MODEL_PATH
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: MODEL_PATH
+            - name: MODEL_CHECKPOINT_DIR
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: MODEL_CHECKPOINT_DIR
+            - name: MODEL_INPUT_SIZE
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: MODEL_INPUT_SIZE
+            - name: MODEL_CONFIDENCE_THRESHOLD
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: MODEL_CONFIDENCE_THRESHOLD
+            - name: MOISTURE_ALERT_THRESHOLD_PCT
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: MOISTURE_ALERT_THRESHOLD_PCT
+            - name: TORCH_NUM_THREADS
+              valueFrom:
+                configMapKeyRef:
+                  name: warehouse-config
+                  key: TORCH_NUM_THREADS
+            # PyTorch cache must be writable; redirect to emptyDir-backed /tmp
+            - name: TORCH_HOME
+              value: /tmp/torch
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: warehouse-secrets
+                  key: DB_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: warehouse-secrets
+                  key: DB_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: warehouse-secrets
+                  key: JWT_SECRET
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            # Model loading takes time; give the process ample startup grace.
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2000m"
+              memory: "3Gi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: model-weights
+              mountPath: /models/moisture
+              readOnly: true
+            - name: checkpoints
+              mountPath: /checkpoints/moisture
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 512Mi
+        # Model weights are served from a pre-populated PVC.
+        # Populate with: kubectl cp model.pt warehouse/moisture-model-loader:/models/moisture/model.pt
+        - name: model-weights
+          persistentVolumeClaim:
+            claimName: moisture-model-weights
+            readOnly: true
+        - name: checkpoints
+          persistentVolumeClaim:
+            claimName: moisture-checkpoints
+---
+# PVC for read-only model weights shared across replicas.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: moisture-model-weights
+  namespace: warehouse
+  labels:
+    app: moisture-service
+    app.kubernetes.io/part-of: warehouse-platform
+spec:
+  accessModes:
+    - ReadOnlyMany
+  resources:
+    requests:
+      storage: 2Gi
+  storageClassName: standard
+---
+# PVC for fine-tuned checkpoint files (per-customer models).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: moisture-checkpoints
+  namespace: warehouse
+  labels:
+    app: moisture-service
+    app.kubernetes.io/part-of: warehouse-platform
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: standard
