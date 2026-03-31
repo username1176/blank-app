@@ -16,6 +16,11 @@ export async function acknowledgeAlert(alertId: string): Promise<Alert> {
   return data;
 }
 
+export async function resolveAlert(alertId: string): Promise<Alert> {
+  const { data } = await apiClient.put<Alert>(`/api/alerts/${alertId}/resolve`);
+  return data;
+}
+
 export async function fetchAlertSettings(customerId: string): Promise<AlertSettings> {
   const { data } = await apiClient.get<AlertSettings>(
     `/api/alerts/settings/${customerId}`,

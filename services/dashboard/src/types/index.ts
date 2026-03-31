@@ -136,6 +136,7 @@ export interface AlertFilters {
   status?:   AlertStatus;
   severity?: AlertSeverity;
   siteId?:   string;
+  type?:     string;
   page?:     number;
   limit?:    number;
 }
