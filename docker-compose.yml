@@ -1,19 +1,364 @@
+# =============================================================================
+# Warehouse Platform — local development Docker Compose
+#
+# Usage:
+#   docker compose up --build          # start everything
+#   docker compose up --build dashboard  # rebuild only the frontend
+#   docker compose logs -f api-gateway   # tail a single service
+#   docker compose down -v               # stop and delete volumes
+#
+# Infrastructure boots first (TimescaleDB, Kafka, Redis, Mosquitto).
+# The one-shot `migrate` container runs Flyway migrations once the DB is
+# healthy.  Application services start only after migrations complete.
+# =============================================================================
+
+x-node-svc: &node-svc
+  restart: unless-stopped
+  networks:
+    - warehouse-net
+  env_file: .env
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+    kafka:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
 services:
+
+  # ── Infrastructure ───────────────────────────────────────────────────────────
+
   db:
     image: timescale/timescaledb-ha:pg16-latest
+    restart: unless-stopped
+    networks:
+      - warehouse-net
     environment:
-      POSTGRES_USER:     postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB:       warehouse_dev
+      POSTGRES_USER:     ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB:       ${POSTGRES_DB:-warehouse_dev}
     ports:
       - "5432:5432"
     volumes:
-      - tsdb_data:/home/postgres/pgdata/data
+      - tsdb-data:/home/postgres/pgdata/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d warehouse_dev"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-warehouse_dev}"]
       interval: 5s
       timeout: 5s
+      retries: 15
+      start_period: 10s
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    restart: unless-stopped
+    networks:
+      - warehouse-net
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME:   2000
+      ZOOKEEPER_LOG4J_ROOT_LOGLEVEL: WARN
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-log:/var/lib/zookeeper/log
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc -w 2 localhost 2181 | grep imok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    restart: unless-stopped
+    networks:
+      - warehouse-net
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_ID:                        1
+      KAFKA_ZOOKEEPER_CONNECT:                zookeeper:2181
+      # Two listeners: INTERNAL for service-to-service, EXTERNAL for host tooling
+      KAFKA_LISTENERS:                        INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS:             INTERNAL://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP:   INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME:       INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE:        "true"
+      KAFKA_LOG_RETENTION_HOURS:              24
+      KAFKA_LOG4J_ROOT_LOGLEVEL:              WARN
+      KAFKA_TOOLS_LOG4J_LOGLEVEL:             ERROR
+    ports:
+      - "29092:29092"   # host access via localhost:29092
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 30s
+
+  redis:
+    image: redis:7.2-alpine
+    restart: unless-stopped
+    networks:
+      - warehouse-net
+    command: redis-server --save "" --appendonly no --loglevel warning
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
       retries: 10
 
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    restart: unless-stopped
+    networks:
+      - warehouse-net
+    volumes:
+      - ./services/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+      - mosquitto-log:/mosquitto/log
+    ports:
+      - "1883:1883"   # MQTT (host access for local sensor simulators)
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_pub -h localhost -t '$$health' -m ping -q 0 2>/dev/null && echo ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # ── Database migrations (one-shot) ──────────────────────────────────────────
+
+  migrate:
+    image: flyway/flyway:10-alpine
+    networks:
+      - warehouse-net
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./db/migrations:/flyway/sql:ro
+    command: >
+      -url=jdbc:postgresql://db:5432/${POSTGRES_DB:-warehouse_dev}
+      -user=${POSTGRES_USER:-postgres}
+      -password=${POSTGRES_PASSWORD:-postgres}
+      -connectRetries=10
+      migrate
+
+  # ── Application services ─────────────────────────────────────────────────────
+
+  inventory-service:
+    <<: *node-svc
+    build:
+      context: ./services/inventory-service
+      dockerfile: Dockerfile
+    environment:
+      PORT:          3001
+      NODE_ENV:      ${NODE_ENV:-development}
+      LOG_LEVEL:     ${LOG_LEVEL:-info}
+      DB_HOST:       db
+      DB_PORT:       5432
+      DB_NAME:       ${POSTGRES_DB:-warehouse_dev}
+      DB_USER:       ${POSTGRES_USER:-postgres}
+      DB_PASSWORD:   ${POSTGRES_PASSWORD:-postgres}
+      JWT_SECRET:    ${JWT_SECRET}
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
+      KAFKA_ENABLED: ${KAFKA_ENABLED:-true}
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3001/health/live',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  moisture-service:
+    restart: unless-stopped
+    networks:
+      - warehouse-net
+    env_file: .env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    build:
+      context: ./services/moisture-service
+      dockerfile: Dockerfile
+    environment:
+      PORT:                    3002
+      ENVIRONMENT:             ${NODE_ENV:-development}
+      LOG_LEVEL:               ${LOG_LEVEL:-info}
+      DB_HOST:                 db
+      DB_PORT:                 5432
+      DB_NAME:                 ${POSTGRES_DB:-warehouse_dev}
+      DB_USER:                 ${POSTGRES_USER:-postgres}
+      DB_PASSWORD:             ${POSTGRES_PASSWORD:-postgres}
+      JWT_SECRET:              ${JWT_SECRET}
+      MODEL_PATH:              ${MODEL_PATH:-}
+      MODEL_CHECKPOINT_DIR:    ${MODEL_CHECKPOINT_DIR:-/checkpoints/moisture}
+      MOISTURE_ALERT_THRESHOLD_PCT: ${MOISTURE_ALERT_THRESHOLD_PCT:-15.0}
+    volumes:
+      - moisture-checkpoints:/checkpoints/moisture
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:3002/health/live')\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  environment-service:
+    <<: *node-svc
+    build:
+      context: ./services/environment-service
+      dockerfile: Dockerfile
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mosquitto:
+        condition: service_healthy
+    environment:
+      PORT:               3003
+      NODE_ENV:           ${NODE_ENV:-development}
+      LOG_LEVEL:          ${LOG_LEVEL:-info}
+      DB_HOST:            db
+      DB_PORT:            5432
+      DB_NAME:            ${POSTGRES_DB:-warehouse_dev}
+      DB_USER:            ${POSTGRES_USER:-postgres}
+      DB_PASSWORD:        ${POSTGRES_PASSWORD:-postgres}
+      JWT_SECRET:         ${JWT_SECRET}
+      KAFKA_BROKERS:      ${KAFKA_BROKERS:-kafka:9092}
+      KAFKA_ENABLED:      ${KAFKA_ENABLED:-true}
+      MQTT_URL:           ${MQTT_URL:-mqtt://mosquitto:1883}
+      MQTT_TOPIC_PREFIX:  ${MQTT_TOPIC_PREFIX:-warehouse}
+      MQTT_ENABLED:       "true"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3003/health/live',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  alert-service:
+    <<: *node-svc
+    build:
+      context: ./services/alert-service
+      dockerfile: Dockerfile
+    environment:
+      PORT:                  3004
+      NODE_ENV:              ${NODE_ENV:-development}
+      LOG_LEVEL:             ${LOG_LEVEL:-info}
+      DB_HOST:               db
+      DB_PORT:               5432
+      DB_NAME:               ${POSTGRES_DB:-warehouse_dev}
+      DB_USER:               ${POSTGRES_USER:-postgres}
+      DB_PASSWORD:           ${POSTGRES_PASSWORD:-postgres}
+      JWT_SECRET:            ${JWT_SECRET}
+      KAFKA_BROKERS:         ${KAFKA_BROKERS:-kafka:9092}
+      KAFKA_ENABLED:         ${KAFKA_ENABLED:-true}
+      NOTIFICATIONS_ENABLED: ${NOTIFICATIONS_ENABLED:-false}
+      SENDGRID_API_KEY:      ${SENDGRID_API_KEY:-}
+      SENDGRID_FROM_EMAIL:   ${SENDGRID_FROM_EMAIL:-alerts@warehouse-platform.io}
+      TWILIO_ACCOUNT_SID:    ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN:     ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_FROM_NUMBER:    ${TWILIO_FROM_NUMBER:-+15550000000}
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3004/health/live',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  api-gateway:
+    <<: *node-svc
+    build:
+      context: ./services/api-gateway
+      dockerfile: Dockerfile
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      inventory-service:
+        condition: service_healthy
+      moisture-service:
+        condition: service_healthy
+      environment-service:
+        condition: service_healthy
+      alert-service:
+        condition: service_healthy
+    environment:
+      PORT:                    3000
+      NODE_ENV:                ${NODE_ENV:-development}
+      LOG_LEVEL:               ${LOG_LEVEL:-info}
+      JWT_SECRET:              ${JWT_SECRET}
+      JWT_REFRESH_SECRET:      ${JWT_REFRESH_SECRET}
+      JWT_ACCESS_TTL:          ${JWT_ACCESS_TTL:-15m}
+      JWT_REFRESH_TTL:         ${JWT_REFRESH_TTL:-7d}
+      JWT_VERIFY_AT_GATEWAY:   ${JWT_VERIFY_AT_GATEWAY:-true}
+      JWT_PUBLIC_PATHS:        ${JWT_PUBLIC_PATHS:-/health,/auth/login,/auth/refresh}
+      CORS_ORIGINS:            ${CORS_ORIGINS:-http://localhost:80}
+      CORS_ALLOW_CREDENTIALS:  ${CORS_ALLOW_CREDENTIALS:-true}
+      REDIS_URL:               ${REDIS_URL:-redis://redis:6379}
+      INVENTORY_SERVICE_URL:   http://inventory-service:3001
+      MOISTURE_SERVICE_URL:    http://moisture-service:3002
+      ENVIRONMENT_SERVICE_URL: http://environment-service:3003
+      ALERT_SERVICE_URL:       http://alert-service:3004
+    ports:
+      - "3000:3000"   # direct gateway access (optional, bypass Nginx)
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3000/health/live',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  dashboard:
+    restart: unless-stopped
+    networks:
+      - warehouse-net
+    build:
+      context: ./services/dashboard
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL:      ${VITE_API_URL:-/api}
+        VITE_MAPBOX_TOKEN: ${VITE_MAPBOX_TOKEN:-}
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+    ports:
+      - "80:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+# ── Named volumes ─────────────────────────────────────────────────────────────
+
 volumes:
-  tsdb_data:
+  tsdb-data:
+  zookeeper-data:
+  zookeeper-log:
+  kafka-data:
+  redis-data:
+  mosquitto-data:
+  mosquitto-log:
+  moisture-checkpoints:
+
+# ── Network ───────────────────────────────────────────────────────────────────
+
+networks:
+  warehouse-net:
+    driver: bridge
