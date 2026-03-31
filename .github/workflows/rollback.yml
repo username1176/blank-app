@@ -1,0 +1,96 @@
+# =============================================================================
+# Rollback — manually roll back one or all services to a previous image tag.
+#
+# Usage (GitHub UI: Actions → Rollback → Run workflow):
+#   environment  staging | production
+#   image-tag    the sha-<short-sha> tag to roll back to, e.g. sha-a1b2c3d
+#   services     comma-separated list or "all"
+#                e.g. "api-gateway,dashboard" or "all"
+# =============================================================================
+
+name: Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options: [staging, production]
+      image-tag:
+        description: "Image tag to roll back to (e.g. sha-a1b2c3d)"
+        required: true
+        type: string
+      services:
+        description: 'Services to roll back — comma-separated or "all"'
+        required: true
+        type: string
+        default: "all"
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  rollback:
+    name: Rollback → ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ inputs.environment == 'production' && 'https://app.warehouse-platform.io' || 'https://staging.warehouse-platform.io' }}
+    env:
+      K8S_NAMESPACE: warehouse
+    steps:
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: "v1.30.0"
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          SECRET_NAME="${{ inputs.environment == 'production' && 'PRODUCTION_KUBECONFIG' || 'STAGING_KUBECONFIG' }}"
+          if [[ "${{ inputs.environment }}" == "production" ]]; then
+            echo "${{ secrets.PRODUCTION_KUBECONFIG }}" | base64 --decode > ~/.kube/config
+          else
+            echo "${{ secrets.STAGING_KUBECONFIG }}" | base64 --decode > ~/.kube/config
+          fi
+          chmod 600 ~/.kube/config
+
+      - name: Verify cluster connectivity
+        run: kubectl cluster-info --request-timeout=10s
+
+      - name: Roll back services
+        run: |
+          REGISTRY="ghcr.io/${{ github.repository }}"
+          TAG="${{ inputs.image-tag }}"
+          NS="${{ env.K8S_NAMESPACE }}"
+          INPUT="${{ inputs.services }}"
+
+          ALL_SERVICES=(api-gateway inventory-service moisture-service environment-service alert-service dashboard)
+
+          if [[ "$INPUT" == "all" ]]; then
+            TARGETS=("${ALL_SERVICES[@]}")
+          else
+            IFS=',' read -ra TARGETS <<< "$INPUT"
+          fi
+
+          for svc in "${TARGETS[@]}"; do
+            svc=$(echo "$svc" | xargs)  # trim whitespace
+            echo "::group::Rolling back $svc to $TAG"
+            kubectl set image "deployment/$svc" \
+              "$svc=${REGISTRY}/${svc}:${TAG}" \
+              -n "$NS"
+            kubectl rollout status "deployment/$svc" \
+              -n "$NS" --timeout=5m
+            echo "::endgroup::"
+          done
+
+      - name: Show pod status
+        if: always()
+        run: kubectl get pods -n ${{ env.K8S_NAMESPACE }} -o wide

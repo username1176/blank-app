@@ -1,0 +1,22 @@
+# Development / CI dependencies for moisture-service.
+# Install alongside requirements.txt for local dev and CI linting / testing.
+#
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements.txt --no-deps torch torchvision
+#   pip install -r requirements-dev.txt
+
+# ── Linting & formatting ───────────────────────────────────────────────────
+ruff==0.8.4
+mypy==1.13.0
+
+# ── Type stubs ────────────────────────────────────────────────────────────
+types-Pillow==10.2.0.20240520
+
+# ── Testing ────────────────────────────────────────────────────────────────
+pytest==8.3.4
+pytest-asyncio==0.24.0
+httpx==0.28.1           # async test client for FastAPI (via ASGITransport)
+anyio[trio]==4.7.0      # async test backend
+
+# ── Test utilities ────────────────────────────────────────────────────────
+pytest-cov==6.0.0       # coverage reporting

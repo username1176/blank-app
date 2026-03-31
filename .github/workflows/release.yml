@@ -1,0 +1,409 @@
+# =============================================================================
+# Release — triggered on every push to main (after a PR is merged).
+#
+# Pipeline stages:
+#   changes          → detect which services were touched
+#   build-push       → build Docker images and push to GHCR
+#   deploy-staging   → rolling update on the staging cluster (automatic)
+#   smoke-test       → curl /health/live on all staging endpoints
+#   deploy-prod      → rolling update on the production cluster (manual gate)
+#
+# Required repository secrets:
+#   STAGING_KUBECONFIG    base64-encoded kubeconfig for the staging cluster
+#   PRODUCTION_KUBECONFIG base64-encoded kubeconfig for the production cluster
+#   VITE_MAPBOX_TOKEN     Mapbox public token baked into the dashboard image
+#
+# Required GitHub Environments (Settings → Environments):
+#   staging     — no required reviewers, auto-deploy
+#   production  — add required reviewers to enforce a manual approval gate
+# =============================================================================
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      force-all:
+        description: "Build and deploy ALL services regardless of changes"
+        type: boolean
+        default: false
+
+concurrency:
+  # Only one release pipeline runs at a time for the main branch.
+  group: release-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write   # needed to push to GHCR
+  id-token: write   # needed for OIDC if using cloud provider auth
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/${{ github.repository }}
+
+jobs:
+
+  # ── 1. Detect changed services ────────────────────────────────────────────
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      api-gateway:          ${{ steps.out.outputs.api-gateway }}
+      inventory-service:    ${{ steps.out.outputs.inventory-service }}
+      moisture-service:     ${{ steps.out.outputs.moisture-service }}
+      environment-service:  ${{ steps.out.outputs.environment-service }}
+      alert-service:        ${{ steps.out.outputs.alert-service }}
+      dashboard:            ${{ steps.out.outputs.dashboard }}
+      k8s:                  ${{ steps.out.outputs.k8s }}
+      build-matrix:         ${{ steps.out.outputs.build-matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so paths-filter can diff against the merge base
+          fetch-depth: 0
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            api-gateway:
+              - 'services/api-gateway/**'
+            inventory-service:
+              - 'services/inventory-service/**'
+            moisture-service:
+              - 'services/moisture-service/**'
+            environment-service:
+              - 'services/environment-service/**'
+            alert-service:
+              - 'services/alert-service/**'
+            dashboard:
+              - 'services/dashboard/**'
+            k8s:
+              - 'k8s/**'
+
+      - id: out
+        run: |
+          FORCE="${{ inputs.force-all }}"
+
+          # Helper: is a service "changed" (by filter OR forced)?
+          changed() {
+            local svc="$1"
+            local filter_out="${2}"
+            [[ "$FORCE" == "true" || "$filter_out" == "true" ]] && echo "true" || echo "false"
+          }
+
+          api_gw=$(changed   api-gateway         "${{ steps.filter.outputs.api-gateway }}")
+          inv=$(changed      inventory-service   "${{ steps.filter.outputs.inventory-service }}")
+          moist=$(changed    moisture-service    "${{ steps.filter.outputs.moisture-service }}")
+          env_svc=$(changed  environment-service "${{ steps.filter.outputs.environment-service }}")
+          alert=$(changed    alert-service       "${{ steps.filter.outputs.alert-service }}")
+          dash=$(changed     dashboard           "${{ steps.filter.outputs.dashboard }}")
+          k8s_changed="${{ steps.filter.outputs.k8s }}"
+
+          echo "api-gateway=$api_gw"               >> "$GITHUB_OUTPUT"
+          echo "inventory-service=$inv"            >> "$GITHUB_OUTPUT"
+          echo "moisture-service=$moist"           >> "$GITHUB_OUTPUT"
+          echo "environment-service=$env_svc"      >> "$GITHUB_OUTPUT"
+          echo "alert-service=$alert"              >> "$GITHUB_OUTPUT"
+          echo "dashboard=$dash"                   >> "$GITHUB_OUTPUT"
+          echo "k8s=$k8s_changed"                  >> "$GITHUB_OUTPUT"
+
+          # Build JSON matrix for the build-push job
+          # Fields:
+          #   service     — used for image name and k8s deployment name
+          #   context     — Docker build context path
+          #   build_args  — newline-separated ARG=value pairs (empty for most)
+          matrix='[]'
+          [[ "$api_gw" == "true" ]] && \
+            matrix=$(echo "$matrix" | jq '. + [{"service":"api-gateway","context":"services/api-gateway","build_args":""}]')
+          [[ "$inv" == "true" ]] && \
+            matrix=$(echo "$matrix" | jq '. + [{"service":"inventory-service","context":"services/inventory-service","build_args":""}]')
+          [[ "$moist" == "true" ]] && \
+            matrix=$(echo "$matrix" | jq '. + [{"service":"moisture-service","context":"services/moisture-service","build_args":""}]')
+          [[ "$env_svc" == "true" ]] && \
+            matrix=$(echo "$matrix" | jq '. + [{"service":"environment-service","context":"services/environment-service","build_args":""}]')
+          [[ "$alert" == "true" ]] && \
+            matrix=$(echo "$matrix" | jq '. + [{"service":"alert-service","context":"services/alert-service","build_args":""}]')
+          # Dashboard gets Vite build args; the secret value is injected below.
+          [[ "$dash" == "true" ]] && \
+            matrix=$(echo "$matrix" | jq '. + [{"service":"dashboard","context":"services/dashboard","build_args":"VITE_API_URL=/api"}]')
+
+          echo "build-matrix=$(echo "$matrix" | jq -c .)" >> "$GITHUB_OUTPUT"
+
+  # ── 2. Build and push Docker images ───────────────────────────────────────
+  build-push:
+    name: Build & push / ${{ matrix.service }}
+    needs: changes
+    if: needs.changes.outputs.build-matrix != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.changes.outputs.build-matrix) }}
+    outputs:
+      # Each matrix item exposes its image digest for provenance.
+      # Consumed by deploy jobs to pin exact images.
+      image-tag: ${{ steps.meta.outputs.tags }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_PREFIX }}/${{ matrix.service }}
+          tags: |
+            # sha-<short-sha> — immutable, used for deployments
+            type=sha,prefix=sha-,format=short
+            # latest — always tracks main
+            type=raw,value=latest,enable=true
+            # Semver tags when a release tag (v1.2.3) is pushed
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+          labels: |
+            org.opencontainers.image.title=${{ matrix.service }}
+            org.opencontainers.image.vendor=Warehouse Platform
+
+      - name: Assemble build args
+        id: args
+        run: |
+          # Start with the static args from the matrix
+          args="${{ matrix.build_args }}"
+          # Append the Mapbox token for the dashboard image
+          if [[ "${{ matrix.service }}" == "dashboard" ]]; then
+            args="${args}"$'\n'"VITE_MAPBOX_TOKEN=${{ secrets.VITE_MAPBOX_TOKEN }}"
+          fi
+          # Write to a file to preserve newlines when passing to the action
+          echo "$args" > /tmp/build-args.txt
+          echo "args-file=/tmp/build-args.txt" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: ${{ matrix.build_args }}${{ matrix.service == 'dashboard' && format('\nVITE_MAPBOX_TOKEN={0}', secrets.VITE_MAPBOX_TOKEN) || '' }}
+          # Layer cache keyed per service — dramatically speeds up rebuilds
+          cache-from: type=registry,ref=${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:cache
+          cache-to:   type=registry,ref=${{ env.IMAGE_PREFIX }}/${{ matrix.service }}:cache,mode=max
+          provenance: true
+          sbom: true
+
+  # ── 3. Deploy to staging ───────────────────────────────────────────────────
+  deploy-staging:
+    name: Deploy → staging
+    needs: [changes, build-push]
+    # Run even if build-push was skipped (e.g., only k8s manifests changed)
+    if: |
+      always() &&
+      !failure() && !cancelled() &&
+      (needs.build-push.result == 'success' || needs.changes.outputs.k8s == 'true')
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: https://staging.warehouse-platform.io
+    env:
+      IMAGE_TAG: sha-${{ github.sha }}
+      K8S_NAMESPACE: warehouse
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: "v1.30.0"
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.STAGING_KUBECONFIG }}" | base64 --decode > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Verify cluster connectivity
+        run: kubectl cluster-info --request-timeout=10s
+
+      - name: Apply k8s manifests (if changed)
+        if: needs.changes.outputs.k8s == 'true'
+        run: |
+          # Apply namespace + shared config first, then per-service manifests
+          kubectl apply -f k8s/namespace.yaml
+          kubectl apply -f k8s/configmap.yaml
+          kubectl apply -f k8s/network-policy.yaml
+          kubectl apply -f k8s/pdb.yaml
+          for dir in k8s/api-gateway k8s/inventory-service k8s/moisture-service \
+                     k8s/environment-service k8s/alert-service k8s/dashboard; do
+            kubectl apply -f "$dir/service.yaml"
+            kubectl apply -f "$dir/hpa.yaml"
+            kubectl apply -f "$dir/deployment.yaml"
+          done
+          kubectl apply -f k8s/ingress.yaml
+
+      - name: Roll out changed service images
+        run: |
+          REGISTRY="${{ env.REGISTRY }}/${{ github.repository }}"
+          TAG="${{ env.IMAGE_TAG }}"
+          NS="${{ env.K8S_NAMESPACE }}"
+
+          roll() {
+            local changed="$1" deploy="$2" container="$3" svc="$4"
+            if [[ "$changed" == "true" ]]; then
+              echo "::group::Rolling out $deploy"
+              kubectl set image "deployment/$deploy" \
+                "$container=${REGISTRY}/${svc}:${TAG}" \
+                -n "$NS"
+              kubectl rollout status "deployment/$deploy" \
+                -n "$NS" --timeout=5m
+              echo "::endgroup::"
+            fi
+          }
+
+          roll "${{ needs.changes.outputs.api-gateway }}"         api-gateway         api-gateway         api-gateway
+          roll "${{ needs.changes.outputs.inventory-service }}"   inventory-service   inventory-service   inventory-service
+          roll "${{ needs.changes.outputs.moisture-service }}"    moisture-service    moisture-service    moisture-service
+          roll "${{ needs.changes.outputs.environment-service }}" environment-service environment-service environment-service
+          roll "${{ needs.changes.outputs.alert-service }}"       alert-service       alert-service       alert-service
+          roll "${{ needs.changes.outputs.dashboard }}"           dashboard           dashboard           dashboard
+
+      - name: Show pod status
+        if: always()
+        run: kubectl get pods -n ${{ env.K8S_NAMESPACE }} -o wide
+
+  # ── 4. Smoke test staging ──────────────────────────────────────────────────
+  smoke-test:
+    name: Smoke test / staging
+    needs: deploy-staging
+    if: needs.deploy-staging.result == 'success'
+    runs-on: ubuntu-latest
+    env:
+      BASE_URL: https://staging.warehouse-platform.io
+    steps:
+      - name: Health checks
+        run: |
+          check() {
+            local url="$1" label="$2"
+            echo -n "Checking $label ... "
+            status=$(curl -sf --max-time 10 --retry 5 --retry-delay 5 \
+              -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || echo "000")
+            if [[ "$status" == "200" ]]; then
+              echo "OK ($status)"
+            else
+              echo "FAILED (HTTP $status)"
+              return 1
+            fi
+          }
+
+          # API gateway health (via ingress)
+          check "${{ env.BASE_URL }}/health/live"  "api-gateway /health/live"
+          check "${{ env.BASE_URL }}/health/ready" "api-gateway /health/ready"
+
+          # Per-service health endpoints proxied through gateway
+          check "${{ env.BASE_URL }}/api/inventory/health/live"    "inventory-service"
+          check "${{ env.BASE_URL }}/api/moisture/health/live"     "moisture-service"
+          check "${{ env.BASE_URL }}/api/environment/health/live"  "environment-service"
+          check "${{ env.BASE_URL }}/api/alerts/health/live"       "alert-service"
+
+          # Dashboard (SPA — just needs a 200 on /)
+          check "https://staging.warehouse-platform.io/" "dashboard"
+
+  # ── 5. Deploy to production ────────────────────────────────────────────────
+  deploy-prod:
+    name: Deploy → production
+    needs: [changes, build-push, smoke-test]
+    if: |
+      always() &&
+      needs.smoke-test.result == 'success' &&
+      !failure() && !cancelled()
+    runs-on: ubuntu-latest
+    # The `production` GitHub Environment should be configured with:
+    #   - Required reviewers (team leads / ops)
+    #   - Wait timer: 0–60 min (optional)
+    #   - Deployment branch policy: main only
+    environment:
+      name: production
+      url: https://app.warehouse-platform.io
+    env:
+      IMAGE_TAG: sha-${{ github.sha }}
+      K8S_NAMESPACE: warehouse
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: "v1.30.0"
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.PRODUCTION_KUBECONFIG }}" | base64 --decode > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Verify cluster connectivity
+        run: kubectl cluster-info --request-timeout=10s
+
+      - name: Apply k8s manifests (if changed)
+        if: needs.changes.outputs.k8s == 'true'
+        run: |
+          kubectl apply -f k8s/namespace.yaml
+          kubectl apply -f k8s/configmap.yaml
+          kubectl apply -f k8s/network-policy.yaml
+          kubectl apply -f k8s/pdb.yaml
+          for dir in k8s/api-gateway k8s/inventory-service k8s/moisture-service \
+                     k8s/environment-service k8s/alert-service k8s/dashboard; do
+            kubectl apply -f "$dir/service.yaml"
+            kubectl apply -f "$dir/hpa.yaml"
+            kubectl apply -f "$dir/deployment.yaml"
+          done
+          kubectl apply -f k8s/ingress.yaml
+
+      - name: Roll out changed service images
+        run: |
+          REGISTRY="${{ env.REGISTRY }}/${{ github.repository }}"
+          TAG="${{ env.IMAGE_TAG }}"
+          NS="${{ env.K8S_NAMESPACE }}"
+
+          roll() {
+            local changed="$1" deploy="$2" container="$3" svc="$4"
+            if [[ "$changed" == "true" ]]; then
+              echo "::group::Rolling out $deploy"
+              kubectl set image "deployment/$deploy" \
+                "$container=${REGISTRY}/${svc}:${TAG}" \
+                -n "$NS"
+              kubectl rollout status "deployment/$deploy" \
+                -n "$NS" --timeout=10m
+              echo "::endgroup::"
+            fi
+          }
+
+          roll "${{ needs.changes.outputs.api-gateway }}"         api-gateway         api-gateway         api-gateway
+          roll "${{ needs.changes.outputs.inventory-service }}"   inventory-service   inventory-service   inventory-service
+          roll "${{ needs.changes.outputs.moisture-service }}"    moisture-service    moisture-service    moisture-service
+          roll "${{ needs.changes.outputs.environment-service }}" environment-service environment-service environment-service
+          roll "${{ needs.changes.outputs.alert-service }}"       alert-service       alert-service       alert-service
+          roll "${{ needs.changes.outputs.dashboard }}"           dashboard           dashboard           dashboard
+
+      - name: Show pod status
+        if: always()
+        run: kubectl get pods -n ${{ env.K8S_NAMESPACE }} -o wide
+
+      - name: Annotate deployment in Git
+        if: success()
+        run: |
+          echo "Production deployment complete."
+          echo "SHA:       ${{ github.sha }}"
+          echo "Image tag: ${{ env.IMAGE_TAG }}"
+          echo "Deployed:  $(date -u +%Y-%m-%dT%H:%M:%SZ)"

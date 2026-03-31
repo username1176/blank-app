@@ -1,0 +1,301 @@
+# =============================================================================
+# CI — runs on every pull request targeting main or staging.
+#
+# Jobs:
+#   changes          → detect which services / paths were touched
+#   typecheck-node   → tsc --noEmit for every changed Node/TS service
+#   lint-node        → eslint for inventory-service (the only svc with ESLint)
+#   lint-python      → ruff check for moisture-service
+#   typecheck-python → mypy for moisture-service
+#   test-python      → pytest for moisture-service
+#   docker-validate  → docker build (no push) for every changed service
+#   ci-gate          → single required status for branch protection
+# =============================================================================
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main, staging]
+  # Allow manual re-runs
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+  pull-requests: read
+
+jobs:
+
+  # ── 1. Detect changed paths ────────────────────────────────────────────────
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      api-gateway:          ${{ steps.filter.outputs.api-gateway }}
+      inventory-service:    ${{ steps.filter.outputs.inventory-service }}
+      moisture-service:     ${{ steps.filter.outputs.moisture-service }}
+      environment-service:  ${{ steps.filter.outputs.environment-service }}
+      alert-service:        ${{ steps.filter.outputs.alert-service }}
+      dashboard:            ${{ steps.filter.outputs.dashboard }}
+      k8s:                  ${{ steps.filter.outputs.k8s }}
+      # JSON arrays consumed as matrix inputs by later jobs
+      node-matrix:          ${{ steps.build-matrices.outputs.node-matrix }}
+      docker-matrix:        ${{ steps.build-matrices.outputs.docker-matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            api-gateway:
+              - 'services/api-gateway/**'
+            inventory-service:
+              - 'services/inventory-service/**'
+            moisture-service:
+              - 'services/moisture-service/**'
+            environment-service:
+              - 'services/environment-service/**'
+            alert-service:
+              - 'services/alert-service/**'
+            dashboard:
+              - 'services/dashboard/**'
+            k8s:
+              - 'k8s/**'
+
+      # Build JSON matrices so downstream jobs can use fromJson() for matrix
+      - id: build-matrices
+        run: |
+          # ── Node typecheck matrix ────────────────────────────────────────────
+          # Fields: service, dir, typecheck-script
+          node='[]'
+          [[ "${{ steps.filter.outputs.api-gateway }}" == "true" ]] && \
+            node=$(echo "$node" | jq '. + [{"service":"api-gateway","dir":"services/api-gateway","typecheck":"typecheck"}]')
+          [[ "${{ steps.filter.outputs.inventory-service }}" == "true" ]] && \
+            node=$(echo "$node" | jq '. + [{"service":"inventory-service","dir":"services/inventory-service","typecheck":"type-check"}]')
+          [[ "${{ steps.filter.outputs.environment-service }}" == "true" ]] && \
+            node=$(echo "$node" | jq '. + [{"service":"environment-service","dir":"services/environment-service","typecheck":"typecheck"}]')
+          [[ "${{ steps.filter.outputs.alert-service }}" == "true" ]] && \
+            node=$(echo "$node" | jq '. + [{"service":"alert-service","dir":"services/alert-service","typecheck":"typecheck"}]')
+          [[ "${{ steps.filter.outputs.dashboard }}" == "true" ]] && \
+            node=$(echo "$node" | jq '. + [{"service":"dashboard","dir":"services/dashboard","typecheck":"typecheck"}]')
+          echo "node-matrix=$(echo "$node" | jq -c .)" >> "$GITHUB_OUTPUT"
+
+          # ── Docker build matrix ──────────────────────────────────────────────
+          # Fields: service, context, dockerfile (optional)
+          docker='[]'
+          [[ "${{ steps.filter.outputs.api-gateway }}" == "true" ]] && \
+            docker=$(echo "$docker" | jq '. + [{"service":"api-gateway","context":"services/api-gateway"}]')
+          [[ "${{ steps.filter.outputs.inventory-service }}" == "true" ]] && \
+            docker=$(echo "$docker" | jq '. + [{"service":"inventory-service","context":"services/inventory-service"}]')
+          [[ "${{ steps.filter.outputs.moisture-service }}" == "true" ]] && \
+            docker=$(echo "$docker" | jq '. + [{"service":"moisture-service","context":"services/moisture-service"}]')
+          [[ "${{ steps.filter.outputs.environment-service }}" == "true" ]] && \
+            docker=$(echo "$docker" | jq '. + [{"service":"environment-service","context":"services/environment-service"}]')
+          [[ "${{ steps.filter.outputs.alert-service }}" == "true" ]] && \
+            docker=$(echo "$docker" | jq '. + [{"service":"alert-service","context":"services/alert-service"}]')
+          [[ "${{ steps.filter.outputs.dashboard }}" == "true" ]] && \
+            docker=$(echo "$docker" | jq '. + [{"service":"dashboard","context":"services/dashboard"}]')
+          echo "docker-matrix=$(echo "$docker" | jq -c .)" >> "$GITHUB_OUTPUT"
+
+  # ── 2. TypeScript typecheck ────────────────────────────────────────────────
+  typecheck-node:
+    name: Typecheck / ${{ matrix.service }}
+    needs: changes
+    if: needs.changes.outputs.node-matrix != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.changes.outputs.node-matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: ${{ matrix.dir }}/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ${{ matrix.dir }}
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: ${{ matrix.dir }}
+        run: npm run ${{ matrix.typecheck }}
+
+  # ── 3. ESLint (inventory-service is the only service with ESLint configured) ─
+  lint-node:
+    name: ESLint / inventory-service
+    needs: changes
+    if: needs.changes.outputs.inventory-service == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: services/inventory-service/package-lock.json
+
+      - name: Install dependencies
+        working-directory: services/inventory-service
+        run: npm ci
+
+      - name: Lint
+        working-directory: services/inventory-service
+        run: npm run lint
+
+  # ── 4. Python: ruff lint ───────────────────────────────────────────────────
+  lint-python:
+    name: Ruff / moisture-service
+    needs: changes
+    if: needs.changes.outputs.moisture-service == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: services/moisture-service/requirements-dev.txt
+
+      - name: Install dev dependencies
+        working-directory: services/moisture-service
+        run: pip install -r requirements-dev.txt
+
+      - name: Ruff lint
+        working-directory: services/moisture-service
+        run: ruff check src/
+
+      - name: Ruff format check
+        working-directory: services/moisture-service
+        run: ruff format --check src/
+
+  # ── 5. Python: mypy typecheck ──────────────────────────────────────────────
+  typecheck-python:
+    name: Mypy / moisture-service
+    needs: changes
+    if: needs.changes.outputs.moisture-service == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            services/moisture-service/requirements.txt
+            services/moisture-service/requirements-dev.txt
+
+      - name: Install dependencies
+        working-directory: services/moisture-service
+        run: |
+          # Install CPU-only torch to avoid downloading the 2 GB CUDA wheel
+          pip install torch==2.5.1 torchvision==0.20.1 \
+            --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt --no-deps torch torchvision
+          pip install -r requirements-dev.txt
+
+      - name: Mypy
+        working-directory: services/moisture-service
+        run: mypy src/ --ignore-missing-imports
+
+  # ── 6. Python: pytest ─────────────────────────────────────────────────────
+  test-python:
+    name: Pytest / moisture-service
+    needs: changes
+    if: needs.changes.outputs.moisture-service == 'true'
+    runs-on: ubuntu-latest
+    env:
+      # Stub env vars so the app config doesn't crash on import during tests
+      DB_NAME:     test_db
+      DB_USER:     test
+      DB_PASSWORD: test
+      JWT_SECRET:  test-jwt-secret-32-characters-long
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            services/moisture-service/requirements.txt
+            services/moisture-service/requirements-dev.txt
+
+      - name: Install dependencies
+        working-directory: services/moisture-service
+        run: |
+          pip install torch==2.5.1 torchvision==0.20.1 \
+            --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt --no-deps torch torchvision
+          pip install -r requirements-dev.txt
+
+      - name: Run tests
+        working-directory: services/moisture-service
+        run: pytest tests/ -v --tb=short --color=yes
+
+  # ── 7. Docker build validation (build only, no push) ──────────────────────
+  docker-validate:
+    name: Docker build / ${{ matrix.service }}
+    needs: [changes, typecheck-node, lint-node, typecheck-python, lint-python]
+    # Run even if upstream lint/typecheck jobs were skipped (no changes)
+    if: |
+      always() &&
+      !failure() && !cancelled() &&
+      needs.changes.outputs.docker-matrix != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.changes.outputs.docker-matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          push: false
+          # Pass stub build-args for services that need them at build time
+          build-args: |
+            VITE_API_URL=/api
+            VITE_MAPBOX_TOKEN=placeholder
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+  # ── 8. CI gate — single status for branch protection rules ────────────────
+  ci-gate:
+    name: CI gate
+    needs:
+      - typecheck-node
+      - lint-node
+      - lint-python
+      - typecheck-python
+      - test-python
+      - docker-validate
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate results
+        run: |
+          results='${{ toJson(needs) }}'
+          echo "$results" | jq .
+          failed=$(echo "$results" | jq '[.[] | select(.result == "failure")] | length')
+          if [[ "$failed" -gt 0 ]]; then
+            echo "::error::$failed job(s) failed — see above for details."
+            exit 1
+          fi
+          echo "All required checks passed."
