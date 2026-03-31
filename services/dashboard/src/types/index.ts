@@ -14,11 +14,14 @@ export interface TokenResponse {
 
 // ── Tenant ─────────────────────────────────────────────────────────────────────
 
+export type UserRole = "admin" | "viewer";
+
 export interface AuthUser {
   userId:     string;
   customerId: string;
   email:      string | null;
   siteIds:    string[];
+  role?:      UserRole;
 }
 
 // ── Sites ──────────────────────────────────────────────────────────────────────
@@ -40,6 +43,86 @@ export interface Site {
   timezone:   string;
   createdAt:  string;
   updatedAt:  string;
+}
+
+export interface SiteUpsertRequest {
+  name:     string;
+  timezone: string;
+  status:   SiteStatus;
+  location: SiteLocation;
+}
+
+// ── Cameras ────────────────────────────────────────────────────────────────────
+
+export type CameraType = "rtsp" | "http" | "hls";
+
+export interface Camera {
+  id:        string;
+  siteId:    string;
+  name:      string;
+  streamUrl: string;
+  type:      CameraType;
+  enabled:   boolean;
+  username?: string;
+}
+
+export interface CameraUpsertRequest {
+  name:      string;
+  streamUrl: string;
+  type:      CameraType;
+  enabled:   boolean;
+  username?: string;
+  /** Only included when changing the password; never returned by the API. */
+  password?: string;
+}
+
+// ── User management ────────────────────────────────────────────────────────────
+
+export type UserStatus = "active" | "invited" | "suspended";
+
+export interface OrgUser {
+  id:           string;
+  customerId:   string;
+  email:        string;
+  name:         string;
+  role:         UserRole;
+  status:       UserStatus;
+  lastLoginAt?: string;
+  createdAt:    string;
+}
+
+export interface InviteUserRequest {
+  email: string;
+  name:  string;
+  role:  UserRole;
+}
+
+// ── API keys ───────────────────────────────────────────────────────────────────
+
+export interface ApiKey {
+  id:          string;
+  customerId:  string;
+  name:        string;
+  /** First 8 characters of the key; rest is masked. */
+  prefix:      string;
+  scopes:      string[];
+  createdAt:   string;
+  lastUsedAt?: string;
+  expiresAt?:  string;
+  createdBy:   string;
+}
+
+export interface CreateApiKeyRequest {
+  name:        string;
+  scopes:      string[];
+  /** Days until expiry; undefined means never. */
+  expiresIn?:  number;
+}
+
+export interface CreateApiKeyResponse {
+  key:    ApiKey;
+  /** Full secret shown exactly once — the user must copy it now. */
+  secret: string;
 }
 
 // ── Inventory ──────────────────────────────────────────────────────────────────
@@ -93,7 +176,7 @@ export interface MoistureStats {
 export interface PileZone {
   id:      string;
   siteId:  string;
-  label:   string;   // e.g. "A1", "Bay 3"
+  label:   string;
   row:     number;
   col:     number;
   width?:  number;
