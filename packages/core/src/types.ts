@@ -8,6 +8,25 @@ export interface Patient {
   phone: string;
   email?: string;
   insuranceId?: string;
+  address?: Address;
+  ssn?: string;
+}
+
+export interface Address {
+  street: string;
+  city: string;
+  state: string;
+  zip: string;
+}
+
+export interface Provider {
+  id: string;
+  firstName: string;
+  lastName: string;
+  npi: string;
+  specialty: string;
+  phone?: string;
+  email?: string;
 }
 
 export interface Appointment {
@@ -18,11 +37,24 @@ export interface Appointment {
   duration: number;
   type: AppointmentType;
   status: AppointmentStatus;
+  notes?: string;
 }
 
 export type AppointmentType = 'cleaning' | 'exam' | 'filling' | 'crown' | 'rootCanal' | 'extraction' | 'consultation' | 'other';
 
 export type AppointmentStatus = 'scheduled' | 'confirmed' | 'checked-in' | 'in-progress' | 'completed' | 'cancelled' | 'no-show';
+
+export interface DateRange {
+  start: string;
+  end: string;
+}
+
+export interface TimeSlot {
+  start: string;
+  end: string;
+  providerId: string;
+  available: boolean;
+}
 
 export interface InsuranceInfo {
   payerId: string;
