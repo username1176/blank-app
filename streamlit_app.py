@@ -6,12 +6,136 @@ st.set_page_config(page_title="CannaOps Management Suite", page_icon="🌿", lay
 # ─── CUSTOM STYLING ──────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-    .main > div { padding-top: 1rem; }
-    .stMetric { background: #181c23; padding: 12px 16px; border-radius: 10px; border: 1px solid #1e2430; }
-    .section-badge-cult { background: rgba(57,229,160,0.15); color: #39e5a0; padding: 4px 10px;
-        border-radius: 20px; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
-    .section-badge-dist { background: rgba(58,143,255,0.15); color: #3a8fff; padding: 4px 10px;
-        border-radius: 20px; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+    html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+
+    /* Page background */
+    .stApp { background: #0a0c0f; }
+    .main .block-container { padding-top: 2rem; padding-bottom: 4rem; max-width: 1400px; }
+
+    /* Hide default chrome */
+    #MainMenu, footer, header { visibility: hidden; }
+
+    /* Sidebar */
+    [data-testid="stSidebar"] { background: #0d1014; border-right: 1px solid #1e2430; }
+    [data-testid="stSidebar"] > div:first-child { padding-top: 1.5rem; }
+
+    /* Sidebar nav buttons */
+    [data-testid="stSidebar"] .stButton > button {
+        background: transparent; color: #8a96b0; border: 1px solid transparent;
+        text-align: left; justify-content: flex-start; font-weight: 600;
+        padding: 0.5rem 0.75rem; font-size: 0.875rem; border-radius: 8px;
+        transition: all 0.15s;
+    }
+    [data-testid="stSidebar"] .stButton > button:hover {
+        background: #181c23; color: #e8edf5; border-color: #252d3d;
+    }
+    [data-testid="stSidebar"] .stButton > button:focus:not(:active) {
+        background: rgba(57,229,160,0.1); color: #39e5a0; border-color: rgba(57,229,160,0.25);
+        box-shadow: none;
+    }
+
+    /* Sidebar labels */
+    .sidebar-label {
+        font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.12em;
+        color: #5a6580; font-weight: 700; padding: 0 0.75rem; margin: 1rem 0 0.25rem;
+    }
+    .sidebar-logo {
+        display: flex; align-items: center; gap: 0.625rem; padding: 0 0.75rem 1rem;
+        border-bottom: 1px solid #1e2430; margin-bottom: 0.5rem;
+    }
+    .sidebar-logo-icon {
+        width: 34px; height: 34px; background: linear-gradient(135deg, #39e5a0, #2bb57c);
+        border-radius: 9px; display: flex; align-items: center; justify-content: center;
+        font-size: 18px;
+    }
+    .sidebar-logo-text { font-weight: 800; font-size: 1rem; color: #e8edf5; line-height: 1.1; }
+    .sidebar-logo-sub { font-size: 0.65rem; color: #5a6580; letter-spacing: 0.08em;
+        text-transform: uppercase; font-weight: 500; }
+
+    /* Page header */
+    .page-head {
+        display: flex; align-items: center; justify-content: space-between;
+        margin-bottom: 1.75rem; padding-bottom: 1rem; border-bottom: 1px solid #1e2430;
+    }
+    .page-title { font-size: 1.625rem; font-weight: 800; color: #e8edf5; letter-spacing: -0.02em; }
+    .page-subtitle { font-size: 0.8rem; color: #5a6580; margin-top: 0.25rem; font-weight: 500; }
+
+    /* Badges */
+    .badge {
+        display: inline-flex; align-items: center; gap: 0.35rem;
+        padding: 0.3rem 0.7rem; border-radius: 999px; font-size: 0.7rem;
+        font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+    }
+    .badge-cult { background: rgba(57,229,160,0.12); color: #39e5a0; border: 1px solid rgba(57,229,160,0.25); }
+    .badge-dist { background: rgba(58,143,255,0.12); color: #3a8fff; border: 1px solid rgba(58,143,255,0.25); }
+    .badge-live { background: rgba(57,229,160,0.12); color: #39e5a0; }
+    .badge-live::before { content: "●"; color: #39e5a0; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+    /* KPI cards */
+    .kpi-card {
+        background: #111318; border: 1px solid #1e2430; border-radius: 12px;
+        padding: 1.1rem 1.25rem; transition: all 0.2s;
+    }
+    .kpi-card:hover { border-color: #2a3547; transform: translateY(-1px); }
+    .kpi-label {
+        font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em;
+        color: #8a96b0; font-weight: 600; margin-bottom: 0.5rem;
+    }
+    .kpi-value {
+        font-family: 'JetBrains Mono', monospace; font-size: 1.75rem; font-weight: 700;
+        color: #e8edf5; line-height: 1.1; letter-spacing: -0.02em;
+    }
+    .kpi-delta {
+        font-size: 0.7rem; font-weight: 600; margin-top: 0.4rem;
+        font-family: 'JetBrains Mono', monospace;
+    }
+    .kpi-delta.up { color: #39e5a0; }
+    .kpi-delta.down { color: #e85959; }
+    .kpi-delta.neutral { color: #8a96b0; }
+    .kpi-accent-green .kpi-value { color: #39e5a0; }
+    .kpi-accent-blue .kpi-value { color: #3a8fff; }
+    .kpi-accent-amber .kpi-value { color: #f5a623; }
+    .kpi-accent-red .kpi-value { color: #e85959; }
+    .kpi-accent-purple .kpi-value { color: #c084fc; }
+
+    /* Section titles */
+    .section-title {
+        font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em;
+        color: #8a96b0; font-weight: 700; margin: 1.5rem 0 0.75rem;
+    }
+
+    /* Data editor polish */
+    [data-testid="stDataFrame"], [data-testid="stDataEditor"] {
+        border-radius: 10px; overflow: hidden; border: 1px solid #1e2430;
+    }
+
+    /* Dividers */
+    hr { border-color: #1e2430 !important; margin: 1.5rem 0 !important; }
+
+    /* Buttons */
+    .stButton > button {
+        border-radius: 8px; font-weight: 600; transition: all 0.15s;
+    }
+
+    /* Info boxes */
+    [data-testid="stAlert"] {
+        border-radius: 10px; border: 1px solid rgba(58,143,255,0.25);
+        background: rgba(58,143,255,0.06);
+    }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #252d3d; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #2a3547; }
+
+    /* Dataframe cell font */
+    [data-testid="stDataFrame"] td, [data-testid="stDataEditor"] td {
+        font-family: 'JetBrains Mono', monospace; font-size: 0.8rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -48,35 +172,41 @@ TIER_OPTS = ["standard", "premium"]
 INV_TYPES = ["Flower", "Trim", "Pre-roll", "Concentrate", "Other"]
 
 # ─── SIDEBAR NAVIGATION ──────────────────────────────────────────────────────
+overview_pages = ["📊 Dashboard"]
+cult_pages = ["🌱 Planting Schedule", "🪴 Veg Room", "🌸 Flowering Room", "⚖️ Processing", "🥽 AR / VR Integration"]
+dist_pages = ["📦 Inventory", "💰 Sales", "🔄 Consignment", "🤝 Clients", "🏭 Vendors", "🚚 Shipping"]
+
+if "page" not in st.session_state:
+    st.session_state.page = "📊 Dashboard"
+
 with st.sidebar:
-    st.markdown("### 🌿 **CannaOps**")
-    st.caption("Management Suite")
-    st.divider()
+    st.markdown(
+        '<div class="sidebar-logo">'
+        '<div class="sidebar-logo-icon">🌿</div>'
+        '<div><div class="sidebar-logo-text">CannaOps</div>'
+        '<div class="sidebar-logo-sub">Management Suite</div></div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
 
-    overview_pages = ["📊 Dashboard"]
-    cult_pages = ["🌱 Planting Schedule", "🪴 Veg Room", "🌸 Flowering Room", "⚖️ Processing", "🥽 AR / VR Integration"]
-    dist_pages = ["📦 Inventory", "💰 Sales", "🔄 Consignment", "🤝 Clients", "🏭 Vendors", "🚚 Shipping"]
-
-    if "page" not in st.session_state:
-        st.session_state.page = "📊 Dashboard"
-
-    st.markdown("**OVERVIEW**")
+    st.markdown('<div class="sidebar-label">Overview</div>', unsafe_allow_html=True)
     for p in overview_pages:
         if st.button(p, key=f"nav_{p}", use_container_width=True):
             st.session_state.page = p
 
-    st.markdown("**CULTIVATION**")
+    st.markdown('<div class="sidebar-label">Cultivation</div>', unsafe_allow_html=True)
     for p in cult_pages:
         if st.button(p, key=f"nav_{p}", use_container_width=True):
             st.session_state.page = p
 
-    st.markdown("**DISTRIBUTION**")
+    st.markdown('<div class="sidebar-label">Distribution</div>', unsafe_allow_html=True)
     for p in dist_pages:
         if st.button(p, key=f"nav_{p}", use_container_width=True):
             st.session_state.page = p
 
+    st.markdown("<br>", unsafe_allow_html=True)
     st.divider()
-    if st.button("🗑️ Reset All Data", use_container_width=True):
+    if st.button("🗑️  Reset All Data", use_container_width=True):
         for key, df in SCHEMAS.items():
             st.session_state[key] = df.copy()
         st.rerun()
@@ -84,15 +214,61 @@ with st.sidebar:
 page = st.session_state.page
 
 # ─── HELPERS ─────────────────────────────────────────────────────────────────
+PAGE_SUBTITLES = {
+    "📊 Dashboard": "Real-time operations overview",
+    "🌱 Planting Schedule": "Strain library & batch planning",
+    "🪴 Veg Room": "Vegetative stage tracking",
+    "🌸 Flowering Room": "Flowering stage tracking",
+    "⚖️ Processing": "Post-harvest weight logs",
+    "🥽 AR / VR Integration": "Immersive facility monitoring",
+    "📦 Inventory": "Stock on hand & valuation",
+    "💰 Sales": "Orders & revenue",
+    "🔄 Consignment": "Outstanding consignment inventory",
+    "🤝 Clients": "Dispensary & wholesale accounts",
+    "🏭 Vendors": "Supplier spend & terms",
+    "🚚 Shipping": "Outbound logistics",
+}
+
 def page_header(title, badge=None):
-    cols = st.columns([4, 1])
-    with cols[0]:
-        st.markdown(f"## {title}")
-    with cols[1]:
-        if badge == "cult":
-            st.markdown('<div style="text-align:right;padding-top:14px"><span class="section-badge-cult">🌿 Cultivation</span></div>', unsafe_allow_html=True)
-        elif badge == "dist":
-            st.markdown('<div style="text-align:right;padding-top:14px"><span class="section-badge-dist">📦 Distribution</span></div>', unsafe_allow_html=True)
+    subtitle = PAGE_SUBTITLES.get(title, "")
+    badge_html = ""
+    if badge == "cult":
+        badge_html = '<span class="badge badge-cult">🌿 Cultivation</span>'
+    elif badge == "dist":
+        badge_html = '<span class="badge badge-dist">📦 Distribution</span>'
+    elif badge == "overview":
+        badge_html = '<span class="badge badge-live">Live</span>'
+    st.markdown(
+        f'<div class="page-head">'
+        f'<div><div class="page-title">{title}</div>'
+        f'<div class="page-subtitle">{subtitle}</div></div>'
+        f'<div>{badge_html}</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+def kpi(label, value, delta=None, accent="green", delta_dir="up"):
+    delta_html = ""
+    if delta:
+        arrow = "↑" if delta_dir == "up" else ("↓" if delta_dir == "down" else "→")
+        delta_html = f'<div class="kpi-delta {delta_dir}">{arrow} {delta}</div>'
+    return (
+        f'<div class="kpi-card kpi-accent-{accent}">'
+        f'<div class="kpi-label">{label}</div>'
+        f'<div class="kpi-value">{value}</div>'
+        f'{delta_html}'
+        f'</div>'
+    )
+
+def kpi_row(items):
+    """items: list of dicts with label/value/delta/accent/delta_dir."""
+    cols = st.columns(len(items))
+    for col, item in zip(cols, items):
+        with col:
+            st.markdown(kpi(**item), unsafe_allow_html=True)
+
+def section(title):
+    st.markdown(f'<div class="section-title">{title}</div>', unsafe_allow_html=True)
 
 def editable(key, column_config=None, num_rows="dynamic"):
     edited = st.data_editor(
@@ -101,13 +277,14 @@ def editable(key, column_config=None, num_rows="dynamic"):
         use_container_width=True,
         column_config=column_config or {},
         key=f"editor_{key}",
+        hide_index=True,
     )
     st.session_state[key] = edited
     return edited
 
 # ─── PAGES ───────────────────────────────────────────────────────────────────
 if page == "📊 Dashboard":
-    page_header("Executive Dashboard")
+    page_header("📊 Dashboard", "overview")
 
     harvests = st.session_state.harvests
     sales = st.session_state.sales
@@ -119,31 +296,32 @@ if page == "📊 Dashboard":
     avg_cpg = harvests["costPerGram"].fillna(0).mean() if len(harvests) else 0
     avg_rpg = harvests["revenuePerGram"].fillna(0).mean() if len(harvests) else 0
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Avg Cost / Gram", f"${avg_cpg:.2f}")
-    c2.metric("Avg Revenue / Gram", f"${avg_rpg:.2f}")
-    c3.metric("Cultivation P&L", f"${pnl:,.0f}")
-    c4.metric("Distribution Revenue", f"${dist_rev:,.2f}")
+    kpi_row([
+        {"label": "Avg Cost / Gram",     "value": f"${avg_cpg:.2f}",  "accent": "amber"},
+        {"label": "Avg Revenue / Gram",  "value": f"${avg_rpg:.2f}",  "accent": "green"},
+        {"label": "Cultivation P&L",     "value": f"${pnl:,.0f}",     "accent": "green" if pnl >= 0 else "red"},
+        {"label": "Distribution Revenue","value": f"${dist_rev:,.0f}","accent": "blue"},
+    ])
 
-    st.divider()
+    st.markdown("<br>", unsafe_allow_html=True)
 
     left, right = st.columns(2)
     with left:
-        st.markdown("#### Cost per Gram by Harvest")
+        section("Cost per Gram by Harvest")
         if len(harvests) and harvests["costPerGram"].notna().any():
-            st.bar_chart(harvests.set_index("id")[["costPerGram"]].dropna())
+            st.bar_chart(harvests.set_index("id")[["costPerGram"]].dropna(), color="#f5a623")
         else:
             st.info("No harvest data yet. Add harvests in the Processing page.")
 
     with right:
-        st.markdown("#### Revenue per Gram by Harvest")
+        section("Revenue per Gram by Harvest")
         if len(harvests) and harvests["revenuePerGram"].notna().any():
-            st.bar_chart(harvests.set_index("id")[["revenuePerGram"]].dropna())
+            st.bar_chart(harvests.set_index("id")[["revenuePerGram"]].dropna(), color="#39e5a0")
         else:
             st.info("No harvest data yet.")
 
-    st.divider()
-    st.markdown("#### P&L Summary")
+    st.markdown("<br>", unsafe_allow_html=True)
+    section("P&L Summary")
     pnl_rows = [
         ("Cultivation Revenue", total_rev),
         ("Cultivation COGS", -total_cost),
@@ -156,9 +334,9 @@ if page == "📊 Dashboard":
     st.dataframe(pd.DataFrame(pnl_rows, columns=["Line Item", "Amount ($)"]), use_container_width=True, hide_index=True)
 
 elif page == "🌱 Planting Schedule":
-    page_header("Planting Schedule", "cult")
+    page_header("🌱 Planting Schedule", "cult")
 
-    st.markdown("#### Strain Library")
+    section("Strain Library")
     editable("strains", {
         "name": st.column_config.TextColumn("Strain Name", required=True),
         "rootDays": st.column_config.NumberColumn("Rooting Days", min_value=0),
@@ -167,8 +345,7 @@ elif page == "🌱 Planting Schedule":
         "color": st.column_config.TextColumn("Color (hex)", help="e.g. #4a90d9"),
     })
 
-    st.divider()
-    st.markdown("#### Active & Planned Batches")
+    section("Active & Planned Batches")
     editable("planting_schedule", {
         "strain": st.column_config.TextColumn("Strain", required=True),
         "cloneDate": st.column_config.DateColumn("Clone Date"),
@@ -181,21 +358,22 @@ elif page == "🌱 Planting Schedule":
     })
 
 elif page == "🪴 Veg Room":
-    page_header("Veg Room", "cult")
+    page_header("🪴 Veg Room", "cult")
 
     vp = st.session_state.veg_plants
     total_plants = vp["count"].fillna(0).sum() if len(vp) else 0
     avg_veg = vp["dayInVeg"].fillna(0).mean() if len(vp) else 0
     n_strains = vp["strain"].nunique() if len(vp) else 0
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total Plants", int(total_plants))
-    c2.metric("Active Tables", len(vp))
-    c3.metric("Strains", int(n_strains))
-    c4.metric("Avg Day in Veg", f"{avg_veg:.0f}d")
+    kpi_row([
+        {"label": "Total Plants",   "value": f"{int(total_plants)}", "accent": "green"},
+        {"label": "Active Tables",  "value": f"{len(vp)}",           "accent": "blue"},
+        {"label": "Strains",        "value": f"{int(n_strains)}",    "accent": "amber"},
+        {"label": "Avg Day in Veg", "value": f"{avg_veg:.0f}d",      "accent": "purple"},
+    ])
 
-    st.divider()
-    st.markdown("#### Veg Tables")
+    st.markdown("<br>", unsafe_allow_html=True)
+    section("Veg Tables")
     editable("veg_plants", {
         "strain": st.column_config.TextColumn("Strain", required=True),
         "count": st.column_config.NumberColumn("Plants", min_value=0),
@@ -204,8 +382,7 @@ elif page == "🪴 Veg Room":
         "health": st.column_config.SelectboxColumn("Health", options=HEALTH_OPTS),
     })
 
-    st.divider()
-    st.markdown("#### 🌡️ Arroyo — Veg Environment")
+    section("🌡️ Arroyo — Veg Environment")
     editable("arroyo_veg", {
         "temp": st.column_config.NumberColumn("Temp (°F)"),
         "humidity": st.column_config.NumberColumn("RH (%)"),
@@ -215,21 +392,22 @@ elif page == "🪴 Veg Room":
     }, num_rows="fixed")
 
 elif page == "🌸 Flowering Room":
-    page_header("Flowering Room", "cult")
+    page_header("🌸 Flowering Room", "cult")
 
     ft = st.session_state.flower_tables
     total_plants = ft["count"].fillna(0).sum() if len(ft) else 0
     total_sqft = ft["sqFt"].fillna(0).sum() if len(ft) else 0
     n_strains = ft["strain"].nunique() if len(ft) else 0
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total Plants", int(total_plants))
-    c2.metric("Total Tables", len(ft))
-    c3.metric("Canopy Sq Ft", f"{int(total_sqft)} ft²")
-    c4.metric("Strains Flowering", int(n_strains))
+    kpi_row([
+        {"label": "Total Plants",      "value": f"{int(total_plants)}",  "accent": "green"},
+        {"label": "Total Tables",      "value": f"{len(ft)}",            "accent": "blue"},
+        {"label": "Canopy Sq Ft",      "value": f"{int(total_sqft)} ft²","accent": "amber"},
+        {"label": "Strains Flowering", "value": f"{int(n_strains)}",     "accent": "purple"},
+    ])
 
-    st.divider()
-    st.markdown("#### Flowering Tables")
+    st.markdown("<br>", unsafe_allow_html=True)
+    section("Flowering Tables")
     editable("flower_tables", {
         "id": st.column_config.TextColumn("Table ID"),
         "strain": st.column_config.TextColumn("Strain", required=True),
@@ -239,8 +417,7 @@ elif page == "🌸 Flowering Room":
         "health": st.column_config.SelectboxColumn("Health", options=HEALTH_OPTS),
     })
 
-    st.divider()
-    st.markdown("#### 🌡️ Arroyo — Flower Environment")
+    section("🌡️ Arroyo — Flower Environment")
     editable("arroyo_flower", {
         "temp": st.column_config.NumberColumn("Temp (°F)"),
         "humidity": st.column_config.NumberColumn("RH (%)"),
@@ -250,7 +427,7 @@ elif page == "🌸 Flowering Room":
     }, num_rows="fixed")
 
 elif page == "⚖️ Processing":
-    page_header("Processing", "cult")
+    page_header("⚖️ Processing", "cult")
 
     h = st.session_state.harvests
     total_flower = h["flowerWeight"].fillna(0).sum() if len(h) else 0
@@ -260,14 +437,15 @@ elif page == "⚖️ Processing":
         ratios = h["flowerWeight"].fillna(0) / h["wetWeight"].replace(0, pd.NA)
         avg_yield = ratios.dropna().mean() * 100 if ratios.notna().any() else 0
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total Harvests", len(h))
-    c2.metric("Total Flower Weight", f"{total_flower:,.0f}g")
-    c3.metric("Avg Flower % of Wet", f"{avg_yield:.1f}%")
-    c4.metric("Total Trim Weight", f"{total_trim:,.0f}g")
+    kpi_row([
+        {"label": "Total Harvests",       "value": f"{len(h)}",             "accent": "blue"},
+        {"label": "Total Flower Weight",  "value": f"{total_flower:,.0f}g", "accent": "green"},
+        {"label": "Avg Flower % of Wet",  "value": f"{avg_yield:.1f}%",     "accent": "amber"},
+        {"label": "Total Trim Weight",    "value": f"{total_trim:,.0f}g",   "accent": "purple"},
+    ])
 
-    st.divider()
-    st.markdown("#### Harvest Weight Log")
+    st.markdown("<br>", unsafe_allow_html=True)
+    section("Harvest Weight Log")
     editable("harvests", {
         "id": st.column_config.TextColumn("Harvest ID", required=True),
         "strain": st.column_config.TextColumn("Strain", required=True),
@@ -281,17 +459,16 @@ elif page == "⚖️ Processing":
     })
 
 elif page == "🥽 AR / VR Integration":
-    page_header("AR / VR Integration", "cult")
+    page_header("🥽 AR / VR Integration", "cult")
 
     st.info("🥽 **Meta Quest & AR Glasses Integration** — Live facility monitoring through Meta Quest Pro, Quest 3, or Ray-Ban Meta Smart Glasses. Walk your rooms with real-time plant data overlays.")
 
     c1, c2, c3 = st.columns(3)
-    c1.button("● Start Live Session", use_container_width=True)
+    c1.button("● Start Live Session", use_container_width=True, type="primary")
     c2.button("⏺ Start Recording", use_container_width=True)
     c3.button("📁 View Recordings", use_container_width=True)
 
-    st.divider()
-    st.markdown("#### Live Feed Features")
+    section("Live Feed Features")
     for f in [
         "Real-time plant count overlay per table",
         "Arroyo sensor data (temp, RH, CO₂, VPD) in AR",
@@ -299,10 +476,9 @@ elif page == "🥽 AR / VR Integration":
         "Alert indicators for environmental deviation",
         "Plant health flagging via color-coded heatmap",
     ]:
-        st.markdown(f"✓ {f}")
+        st.markdown(f"<span style='color:#39e5a0'>✓</span> <span style='color:#e8edf5'>{f}</span>", unsafe_allow_html=True)
 
-    st.divider()
-    st.markdown("#### Connected Devices")
+    section("Connected Devices")
     editable("devices", {
         "name": st.column_config.TextColumn("Device"),
         "type": st.column_config.TextColumn("Type"),
@@ -312,20 +488,21 @@ elif page == "🥽 AR / VR Integration":
     })
 
 elif page == "📦 Inventory":
-    page_header("Inventory", "dist")
+    page_header("📦 Inventory", "dist")
 
     inv = st.session_state.inventory
     total_avail = inv["available"].fillna(0).sum() if len(inv) else 0
     total_consign = inv["onConsignment"].fillna(0).sum() if len(inv) else 0
     est_value = (inv["available"].fillna(0) * inv["costPerG"].fillna(0)).sum() if len(inv) else 0
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total SKUs", len(inv))
-    c2.metric("Available (g)", f"{int(total_avail):,}")
-    c3.metric("On Consignment (g)", f"{int(total_consign):,}")
-    c4.metric("Est. Inventory Value", f"${est_value:,.0f}")
+    kpi_row([
+        {"label": "Total SKUs",          "value": f"{len(inv)}",              "accent": "blue"},
+        {"label": "Available (g)",       "value": f"{int(total_avail):,}",    "accent": "green"},
+        {"label": "On Consignment (g)",  "value": f"{int(total_consign):,}",  "accent": "amber"},
+        {"label": "Est. Inventory Value","value": f"${est_value:,.0f}",       "accent": "purple"},
+    ])
 
-    st.divider()
+    st.markdown("<br>", unsafe_allow_html=True)
     editable("inventory", {
         "strain": st.column_config.TextColumn("Strain", required=True),
         "type": st.column_config.SelectboxColumn("Type", options=INV_TYPES),
@@ -338,20 +515,21 @@ elif page == "📦 Inventory":
     })
 
 elif page == "💰 Sales":
-    page_header("Sales", "dist")
+    page_header("💰 Sales", "dist")
 
     s = st.session_state.sales
     total = s["total"].fillna(0).sum() if len(s) else 0
     avg_ticket = total / len(s) if len(s) else 0
     pending = s[s["status"] == "pending"]["total"].fillna(0).sum() if len(s) and "status" in s.columns else 0
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total Revenue", f"${total:,.2f}")
-    c2.metric("Transactions", len(s))
-    c3.metric("Avg Ticket", f"${avg_ticket:,.2f}")
-    c4.metric("Pending Payments", f"${pending:,.2f}")
+    kpi_row([
+        {"label": "Total Revenue",    "value": f"${total:,.2f}",     "accent": "green"},
+        {"label": "Transactions",     "value": f"{len(s)}",          "accent": "blue"},
+        {"label": "Avg Ticket",       "value": f"${avg_ticket:,.2f}","accent": "amber"},
+        {"label": "Pending Payments", "value": f"${pending:,.2f}",   "accent": "red"},
+    ])
 
-    st.divider()
+    st.markdown("<br>", unsafe_allow_html=True)
     editable("sales", {
         "id": st.column_config.TextColumn("Order #", required=True),
         "date": st.column_config.DateColumn("Date"),
@@ -364,7 +542,7 @@ elif page == "💰 Sales":
     })
 
 elif page == "🔄 Consignment":
-    page_header("Consignment", "dist")
+    page_header("🔄 Consignment", "dist")
 
     c = st.session_state.consignments
     active = c[c["status"] == "active"] if len(c) and "status" in c.columns else pd.DataFrame()
@@ -374,13 +552,14 @@ elif page == "🔄 Consignment":
     if len(active):
         outstanding = ((active["weightOut"].fillna(0) - active["weightSold"].fillna(0)) * active["pricePerG"].fillna(0)).sum()
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Active", len(active))
-    col2.metric("Total Out (g)", int(out_g))
-    col3.metric("Total Sold (g)", int(sold_g))
-    col4.metric("Outstanding Value", f"${outstanding:,.2f}")
+    kpi_row([
+        {"label": "Active",             "value": f"{len(active)}",     "accent": "amber"},
+        {"label": "Total Out (g)",      "value": f"{int(out_g):,}",    "accent": "green"},
+        {"label": "Total Sold (g)",     "value": f"{int(sold_g):,}",   "accent": "blue"},
+        {"label": "Outstanding Value",  "value": f"${outstanding:,.2f}","accent": "red"},
+    ])
 
-    st.divider()
+    st.markdown("<br>", unsafe_allow_html=True)
     editable("consignments", {
         "id": st.column_config.TextColumn("ID", required=True),
         "client": st.column_config.TextColumn("Client"),
@@ -395,20 +574,21 @@ elif page == "🔄 Consignment":
     })
 
 elif page == "🤝 Clients":
-    page_header("Clients", "dist")
+    page_header("🤝 Clients", "dist")
 
     cl = st.session_state.clients
     ytd = cl["ytdPurchases"].fillna(0).sum() if len(cl) else 0
     bal = cl["balance"].fillna(0).sum() if len(cl) else 0
     prem = (cl["tier"] == "premium").sum() if len(cl) and "tier" in cl.columns else 0
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total Clients", len(cl))
-    c2.metric("YTD Revenue", f"${ytd:,.0f}")
-    c3.metric("Open Balances", f"${bal:,.2f}")
-    c4.metric("Premium Accounts", int(prem))
+    kpi_row([
+        {"label": "Total Clients",    "value": f"{len(cl)}",    "accent": "blue"},
+        {"label": "YTD Revenue",      "value": f"${ytd:,.0f}",  "accent": "green"},
+        {"label": "Open Balances",    "value": f"${bal:,.2f}",  "accent": "red"},
+        {"label": "Premium Accounts", "value": f"{int(prem)}",  "accent": "amber"},
+    ])
 
-    st.divider()
+    st.markdown("<br>", unsafe_allow_html=True)
     editable("clients", {
         "name": st.column_config.TextColumn("Client", required=True),
         "contact": st.column_config.TextColumn("Contact"),
@@ -420,7 +600,18 @@ elif page == "🤝 Clients":
     })
 
 elif page == "🏭 Vendors":
-    page_header("Vendors", "dist")
+    page_header("🏭 Vendors", "dist")
+
+    v = st.session_state.vendors
+    total_spend = v["ytdSpend"].fillna(0).sum() if len(v) else 0
+    kpi_row([
+        {"label": "Total Vendors",  "value": f"{len(v)}",           "accent": "blue"},
+        {"label": "YTD Spend",      "value": f"${total_spend:,.0f}","accent": "red"},
+        {"label": "Categories",     "value": f"{v['category'].nunique() if len(v) else 0}", "accent": "amber"},
+        {"label": "Active Terms",   "value": f"{v['terms'].nunique() if len(v) else 0}",    "accent": "purple"},
+    ])
+
+    st.markdown("<br>", unsafe_allow_html=True)
     editable("vendors", {
         "name": st.column_config.TextColumn("Vendor", required=True),
         "category": st.column_config.TextColumn("Category"),
@@ -430,7 +621,20 @@ elif page == "🏭 Vendors":
     })
 
 elif page == "🚚 Shipping":
-    page_header("Shipping", "dist")
+    page_header("🚚 Shipping", "dist")
+
+    sh = st.session_state.shipments
+    in_transit = (sh["status"] == "in transit").sum() if len(sh) and "status" in sh.columns else 0
+    delivered = (sh["status"] == "delivered").sum() if len(sh) and "status" in sh.columns else 0
+    pending = (sh["status"] == "pending").sum() if len(sh) and "status" in sh.columns else 0
+    kpi_row([
+        {"label": "Total Shipments", "value": f"{len(sh)}",    "accent": "blue"},
+        {"label": "In Transit",      "value": f"{in_transit}", "accent": "amber"},
+        {"label": "Delivered",       "value": f"{delivered}",  "accent": "green"},
+        {"label": "Pending",         "value": f"{pending}",    "accent": "purple"},
+    ])
+
+    st.markdown("<br>", unsafe_allow_html=True)
     editable("shipments", {
         "id": st.column_config.TextColumn("Shipment #", required=True),
         "client": st.column_config.TextColumn("Client"),
