@@ -1,5 +1,11 @@
 .streamlit/secrets.toml
 
+# Node.js
+node_modules/
+dist/
+*.tsbuildinfo
+.turbo/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
