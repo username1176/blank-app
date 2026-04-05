@@ -345,6 +345,9 @@ def _wait_for_dashboard_values(driver, timeout=90):
             pass
         time.sleep(1)
     return False
+
+
+def _capture_page(driver, url, wait_secs=20, idle_secs=5, max_wait=120):
     """Navigate to url, then wait until network traffic goes idle (no new requests for idle_secs
     seconds) OR max_wait is reached. Captures all JSON responses seen during the load."""
     del driver.requests
