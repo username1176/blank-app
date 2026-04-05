@@ -247,10 +247,30 @@ def _login(driver, user, password, login_url, user_field="email", pass_field="pa
     return driver.current_url
 
 
-def _capture_page(driver, url, wait_secs=20):
+def _capture_page(driver, url, wait_secs=20, idle_secs=5, max_wait=120):
+    """Navigate to url, then wait until network traffic goes idle (no new requests for idle_secs
+    seconds) OR max_wait is reached. Captures all JSON responses seen during the load."""
     del driver.requests
     driver.get(url)
-    time.sleep(wait_secs)
+
+    # Network-idle wait: poll request count and stop when it stops growing.
+    start = time.time()
+    last_count = 0
+    last_change = time.time()
+    min_wait_until = start + wait_secs  # always wait at least this long
+    while True:
+        now = time.time()
+        count = len(driver.requests)
+        if count != last_count:
+            last_count = count
+            last_change = now
+        elapsed_idle = now - last_change
+        total_elapsed = now - start
+        if total_elapsed >= max_wait:
+            break
+        if now >= min_wait_until and elapsed_idle >= idle_secs:
+            break
+        time.sleep(0.5)
 
     captures = []
     for req in driver.requests:

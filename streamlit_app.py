@@ -555,8 +555,11 @@ elif page == "🌡️ AROYA Sensors":
         scrape_login = sc3.text_input("Login URL", value="https://app.aroya.io/login", key="scrape_login")
         scrape_targets = sc4.text_input("Target URLs (comma-separated)", value="https://app.aroya.io/", key="scrape_targets")
         sc5, sc6 = st.columns(2)
-        scrape_wait = sc5.slider("Wait seconds after page load (for XHRs to fire)", 5, 60, 20)
+        scrape_wait = sc5.slider("Min wait seconds (auto-continues once network idle)", 10, 120, 45)
         login_timeout = sc6.slider("Login timeout (seconds)", 30, 300, 120)
+        st.caption("💡 Tip: paste multiple URLs to hit specific room pages — e.g. "
+                   "`https://app.aroya.io/f/3766/rooms/11955, https://app.aroya.io/f/3766/rooms/16069` "
+                   "to capture per-room sensor history.")
 
         if st.button("🤖 Run Scraper Now", type="primary"):
             if not scrape_user or not scrape_pass:
