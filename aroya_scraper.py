@@ -248,7 +248,103 @@ def _login(driver, user, password, login_url, user_field="email", pass_field="pa
     return driver.current_url
 
 
-def _capture_page(driver, url, wait_secs=20, idle_secs=5, max_wait=120):
+def _scrape_dom_gauges(driver):
+    """Extract live gauge values directly from the AROYA dashboard DOM.
+    Each room card has id='rooms_XXXXX' and contains gauges with aria-label='Data Gauge: <metric>'.
+    The numeric value renders as a <tspan> inside an SVG."""
+    from datetime import datetime, timezone
+    rows = []
+    ts = datetime.now(timezone.utc).isoformat()
+
+    try:
+        room_cards = driver.find_elements(By.CSS_SELECTOR, '[id^="rooms_"]')
+    except Exception:
+        return rows
+
+    for card in room_cards:
+        try:
+            room_id = card.get_attribute("id").replace("rooms_", "")
+            # Room name: first <h4> inside the card
+            try:
+                room_name = card.find_element(By.CSS_SELECTOR, "h4").text.strip()
+            except Exception:
+                room_name = room_id
+
+            gauges = card.find_elements(By.CSS_SELECTOR, '[aria-label^="Data Gauge:"]')
+            for gauge in gauges:
+                try:
+                    aria = gauge.get_attribute("aria-label") or ""
+                    metric = aria.replace("Data Gauge:", "").strip()
+                    # Find numeric value — first <tspan> inside the SVG text element
+                    tspans = gauge.find_elements(By.CSS_SELECTOR, "svg text tspan")
+                    if not tspans:
+                        continue
+                    raw_val = tspans[0].text.strip()
+                    if not raw_val or raw_val == "--":
+                        continue
+                    # Unit is second tspan if present (e.g. "dS/m", "ppm", "kPa")
+                    unit = tspans[1].text.strip() if len(tspans) > 1 else ""
+                    # Strip trailing % or ° from numeric for parsing
+                    numeric_str = raw_val.rstrip("%°").replace(",", "")
+                    try:
+                        value = float(numeric_str)
+                    except ValueError:
+                        continue
+                    # Infer unit from raw value if not in second tspan
+                    if not unit:
+                        if raw_val.endswith("%"): unit = "%"
+                        elif raw_val.endswith("°"): unit = "°F"
+                    rows.append({
+                        "timestamp": ts,
+                        "facility": "",
+                        "room": room_name,
+                        "sensor_id": room_id,
+                        "sensor_name": room_name,
+                        "metric": metric,
+                        "value": value,
+                        "unit": unit,
+                        "source_url": "dom:dashboard",
+                    })
+                except Exception:
+                    continue
+
+            # Also capture dryback if present (shown as "19.5%" in the dryback link)
+            try:
+                dryback_links = card.find_elements(By.CSS_SELECTOR, '[data-testid="hud-dryback-link"]')
+                for dl in dryback_links:
+                    txt = dl.text.strip().rstrip("%")
+                    if txt:
+                        try:
+                            rows.append({
+                                "timestamp": ts, "facility": "", "room": room_name,
+                                "sensor_id": room_id, "sensor_name": room_name,
+                                "metric": "dryback", "value": float(txt), "unit": "%",
+                                "source_url": "dom:dashboard",
+                            })
+                        except ValueError:
+                            pass
+            except Exception:
+                pass
+        except Exception:
+            continue
+    return rows
+
+
+def _wait_for_dashboard_values(driver, timeout=90):
+    """Wait until at least one gauge shows a real numeric value (not '--').
+    Returns True if dashboard populated, False if timeout."""
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            tspans = driver.find_elements(By.CSS_SELECTOR, '[aria-label^="Data Gauge:"] svg text tspan')
+            for t in tspans[:20]:
+                txt = (t.text or "").strip()
+                if txt and txt != "--" and any(c.isdigit() for c in txt):
+                    return True
+        except Exception:
+            pass
+        time.sleep(1)
+    return False
     """Navigate to url, then wait until network traffic goes idle (no new requests for idle_secs
     seconds) OR max_wait is reached. Captures all JSON responses seen during the load."""
     del driver.requests
@@ -443,16 +539,24 @@ def scrape_aroya(
 
         post_login_snap = _snap(driver)
         all_captures = []
+        dom_rows = []
         for url in target_urls:
             all_captures.extend(_capture_page(driver, url, wait_secs=wait_secs))
-        rows = flatten_readings(all_captures)
+            # After XHR capture, wait for gauges to populate, then scrape DOM values
+            populated = _wait_for_dashboard_values(driver, timeout=60)
+            if populated:
+                dom_rows.extend(_scrape_dom_gauges(driver))
+        rows = flatten_readings(all_captures) + dom_rows
         endpoints = sorted({c["url"] for c in all_captures})
+        # Take a fresh snapshot AFTER the dashboard has fully loaded
+        final_snap = _snap(driver)
         return {
             "landing_url": landing,
             "captures": all_captures,
             "rows": rows,
             "endpoints": endpoints,
-            "snapshot": post_login_snap,
+            "snapshot": final_snap,
+            "dom_rows_count": len(dom_rows),
         }
     finally:
         driver.quit()
