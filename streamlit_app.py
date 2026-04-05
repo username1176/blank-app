@@ -1,5 +1,7 @@
 import streamlit as st
 import pandas as pd
+import requests
+from datetime import datetime, timedelta, timezone
 
 st.set_page_config(page_title="CannaOps Management Suite", page_icon="🌿", layout="wide")
 
@@ -155,12 +157,51 @@ SCHEMAS = {
     "devices": pd.DataFrame(columns=["name", "type", "status", "last", "fw"]),
     "arroyo_veg": pd.DataFrame([{"temp": 0.0, "humidity": 0.0, "co2": 0, "vpd": 0.0, "lightHrs": 18}]),
     "arroyo_flower": pd.DataFrame([{"temp": 0.0, "humidity": 0.0, "co2": 0, "vpd": 0.0, "lightHrs": 12}]),
+    "aroya_readings": pd.DataFrame(columns=["timestamp", "facility", "room", "sensor_id", "sensor_name", "metric", "value", "unit"]),
 }
 
 # ─── SESSION STATE INIT ──────────────────────────────────────────────────────
 for key, df in SCHEMAS.items():
     if key not in st.session_state:
         st.session_state[key] = df.copy()
+
+# ─── AROYA CLIENT ────────────────────────────────────────────────────────────
+AROYA_DEFAULTS = {
+    "base_url": "https://app.aroya.io/api/v1",
+    "token": "",
+    "path_facilities": "/facilities",
+    "path_rooms": "/facilities/{facility_id}/rooms",
+    "path_sensors": "/rooms/{room_id}/sensors",
+    "path_readings": "/sensors/{sensor_id}/readings",
+}
+for k, v in AROYA_DEFAULTS.items():
+    st.session_state.setdefault(f"aroya_{k}", st.secrets.get(f"aroya_{k}", v) if hasattr(st, "secrets") else v)
+
+def aroya_headers():
+    tok = st.session_state.get("aroya_token", "")
+    return {"Authorization": f"Bearer {tok}", "Accept": "application/json"}
+
+def aroya_request(path, params=None, method="GET"):
+    base = st.session_state.get("aroya_base_url", "").rstrip("/")
+    url = base + path if path.startswith("/") else f"{base}/{path}"
+    try:
+        r = requests.request(method, url, headers=aroya_headers(), params=params, timeout=20)
+        return r.status_code, (r.json() if r.headers.get("content-type", "").startswith("application/json") else r.text)
+    except requests.RequestException as e:
+        return None, {"error": str(e)}
+
+def aroya_validate():
+    return aroya_request("/validate/")
+
+def _extract_list(payload):
+    """AROYA responses may be a list or wrapped in {'data': [...]} or {'results': [...]}."""
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        for key in ("data", "results", "items", "facilities", "rooms", "sensors", "readings"):
+            if key in payload and isinstance(payload[key], list):
+                return payload[key]
+    return []
 
 # ─── OPTIONS ─────────────────────────────────────────────────────────────────
 HEALTH_OPTS = ["excellent", "good", "fair", "poor"]
@@ -173,7 +214,7 @@ INV_TYPES = ["Flower", "Trim", "Pre-roll", "Concentrate", "Other"]
 
 # ─── SIDEBAR NAVIGATION ──────────────────────────────────────────────────────
 overview_pages = ["📊 Dashboard"]
-cult_pages = ["🌱 Planting Schedule", "🪴 Veg Room", "🌸 Flowering Room", "⚖️ Processing", "🥽 AR / VR Integration"]
+cult_pages = ["🌱 Planting Schedule", "🪴 Veg Room", "🌸 Flowering Room", "⚖️ Processing", "🌡️ AROYA Sensors", "🥽 AR / VR Integration"]
 dist_pages = ["📦 Inventory", "💰 Sales", "🔄 Consignment", "🤝 Clients", "🏭 Vendors", "🚚 Shipping"]
 
 if "page" not in st.session_state:
@@ -220,6 +261,7 @@ PAGE_SUBTITLES = {
     "🪴 Veg Room": "Vegetative stage tracking",
     "🌸 Flowering Room": "Flowering stage tracking",
     "⚖️ Processing": "Post-harvest weight logs",
+    "🌡️ AROYA Sensors": "Live environmental data from AROYA",
     "🥽 AR / VR Integration": "Immersive facility monitoring",
     "📦 Inventory": "Stock on hand & valuation",
     "💰 Sales": "Orders & revenue",
@@ -457,6 +499,192 @@ elif page == "⚖️ Processing":
         "costPerGram": st.column_config.NumberColumn("Cost/g ($)", min_value=0, format="$%.2f"),
         "revenuePerGram": st.column_config.NumberColumn("Revenue/g ($)", min_value=0, format="$%.2f"),
     })
+
+elif page == "🌡️ AROYA Sensors":
+    page_header("🌡️ AROYA Sensors", "cult")
+
+    with st.expander("🔧 Connection Settings", expanded=not st.session_state.get("aroya_token")):
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            st.session_state.aroya_base_url = st.text_input(
+                "Base URL", value=st.session_state.aroya_base_url,
+                help="AROYA API base URL (confirm with AROYA support)")
+            st.session_state.aroya_token = st.text_input(
+                "API Token", value=st.session_state.aroya_token, type="password",
+                help="Request from AROYA customer support. Tokens mirror user permissions.")
+        with c2:
+            st.markdown("**Endpoint Paths** (adjust if needed)")
+            st.session_state.aroya_path_facilities = st.text_input("Facilities", value=st.session_state.aroya_path_facilities)
+            st.session_state.aroya_path_rooms = st.text_input("Rooms", value=st.session_state.aroya_path_rooms)
+            st.session_state.aroya_path_sensors = st.text_input("Sensors", value=st.session_state.aroya_path_sensors)
+            st.session_state.aroya_path_readings = st.text_input("Readings", value=st.session_state.aroya_path_readings)
+
+        bcol1, bcol2, _ = st.columns([1, 1, 3])
+        if bcol1.button("🔌 Test Connection", type="primary"):
+            if not st.session_state.aroya_token:
+                st.error("Enter an API token first.")
+            else:
+                code, payload = aroya_validate()
+                if code == 200:
+                    st.success(f"✓ Connected — {payload if isinstance(payload, (str, dict)) else 'OK'}")
+                elif code is None:
+                    st.error(f"Network error: {payload.get('error')}")
+                else:
+                    st.error(f"HTTP {code}: {payload}")
+
+    if not st.session_state.aroya_token:
+        st.info("👆 Enter your AROYA API token above to begin capturing sensor data.")
+        st.stop()
+
+    # ── Facility / Room Picker ──
+    section("Facilities & Rooms")
+
+    if st.button("🔄 Refresh Facilities"):
+        code, payload = aroya_request(st.session_state.aroya_path_facilities)
+        if code == 200:
+            st.session_state["_aroya_facilities"] = _extract_list(payload)
+            st.success(f"Loaded {len(st.session_state['_aroya_facilities'])} facility(ies).")
+        else:
+            st.error(f"Failed ({code}): {payload}")
+
+    facilities = st.session_state.get("_aroya_facilities", [])
+    if facilities:
+        fac_opts = {str(f.get("name", f.get("id", "?"))): f for f in facilities}
+        fac_name = st.selectbox("Facility", list(fac_opts.keys()))
+        facility = fac_opts[fac_name]
+        fac_id = facility.get("id") or facility.get("facility_id")
+
+        room_path = st.session_state.aroya_path_rooms.format(facility_id=fac_id)
+        if st.button("🔄 Load Rooms"):
+            code, payload = aroya_request(room_path)
+            if code == 200:
+                st.session_state["_aroya_rooms"] = _extract_list(payload)
+                st.success(f"Loaded {len(st.session_state['_aroya_rooms'])} room(s).")
+            else:
+                st.error(f"Failed ({code}): {payload}")
+
+        rooms = st.session_state.get("_aroya_rooms", [])
+        if rooms:
+            room_opts = {str(r.get("name", r.get("id", "?"))): r for r in rooms}
+            selected_rooms = st.multiselect("Rooms to capture", list(room_opts.keys()), default=list(room_opts.keys()))
+
+            # ── Reading Capture ──
+            section("Capture Sensor Readings")
+            tcol1, tcol2, tcol3 = st.columns(3)
+            with tcol1:
+                hours_back = st.number_input("Hours of history", min_value=1, max_value=720, value=24)
+            with tcol2:
+                start_iso = (datetime.now(timezone.utc) - timedelta(hours=hours_back)).isoformat()
+                st.text_input("Start (UTC)", value=start_iso, disabled=True)
+            with tcol3:
+                end_iso = datetime.now(timezone.utc).isoformat()
+                st.text_input("End (UTC)", value=end_iso, disabled=True)
+
+            if st.button("⬇️ Pull All Sensor Data", type="primary"):
+                all_rows = []
+                progress = st.progress(0.0, text="Fetching sensors...")
+                total = max(len(selected_rooms), 1)
+                for i, rn in enumerate(selected_rooms):
+                    room = room_opts[rn]
+                    room_id = room.get("id") or room.get("room_id")
+                    # list sensors in room
+                    sensors_path = st.session_state.aroya_path_sensors.format(room_id=room_id)
+                    code, payload = aroya_request(sensors_path)
+                    if code != 200:
+                        st.warning(f"Room '{rn}': sensor list failed ({code})")
+                        progress.progress((i + 1) / total)
+                        continue
+                    sensors = _extract_list(payload)
+                    for sensor in sensors:
+                        sid = sensor.get("id") or sensor.get("sensor_id")
+                        sname = sensor.get("name") or sensor.get("type") or str(sid)
+                        readings_path = st.session_state.aroya_path_readings.format(sensor_id=sid)
+                        code2, payload2 = aroya_request(readings_path, params={"start": start_iso, "end": end_iso})
+                        if code2 != 200:
+                            continue
+                        for reading in _extract_list(payload2):
+                            # best-effort parse — AROYA may use various field names
+                            ts = reading.get("timestamp") or reading.get("time") or reading.get("recorded_at")
+                            metrics = {}
+                            for key in ("temperature", "temp_c", "temp_f", "humidity", "rh",
+                                        "co2", "co2_ppm", "vpd", "vpd_kpa", "value", "moisture", "ec", "ph",
+                                        "par", "ppfd", "temp", "soil_temp", "soil_moisture", "ec_porewater"):
+                                if key in reading and reading[key] is not None:
+                                    metrics[key] = reading[key]
+                            if not metrics and "metric" in reading and "value" in reading:
+                                metrics[reading["metric"]] = reading["value"]
+                            for metric, value in metrics.items():
+                                all_rows.append({
+                                    "timestamp": ts,
+                                    "facility": fac_name,
+                                    "room": rn,
+                                    "sensor_id": str(sid),
+                                    "sensor_name": sname,
+                                    "metric": metric,
+                                    "value": value,
+                                    "unit": reading.get("unit", ""),
+                                })
+                    progress.progress((i + 1) / total)
+                progress.empty()
+
+                if all_rows:
+                    new_df = pd.DataFrame(all_rows)
+                    existing = st.session_state.aroya_readings
+                    combined = pd.concat([existing, new_df], ignore_index=True).drop_duplicates(
+                        subset=["timestamp", "sensor_id", "metric"], keep="last")
+                    st.session_state.aroya_readings = combined
+                    st.success(f"✓ Captured {len(new_df)} new readings. Total stored: {len(combined)}")
+                else:
+                    st.warning("No readings returned. Check endpoint paths and date range.")
+
+    # ── Captured Data ──
+    readings = st.session_state.aroya_readings
+    section("Captured Readings")
+
+    if len(readings) == 0:
+        st.info("No sensor data captured yet. Configure connection above and pull data.")
+    else:
+        # summary KPIs
+        kpi_row([
+            {"label": "Total Readings",  "value": f"{len(readings):,}",              "accent": "green"},
+            {"label": "Unique Sensors",  "value": f"{readings['sensor_id'].nunique()}", "accent": "blue"},
+            {"label": "Metrics Tracked", "value": f"{readings['metric'].nunique()}",    "accent": "amber"},
+            {"label": "Rooms",           "value": f"{readings['room'].nunique()}",      "accent": "purple"},
+        ])
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # filters + chart
+        fc1, fc2 = st.columns(2)
+        metric_sel = fc1.multiselect("Filter: metrics", sorted(readings["metric"].unique()),
+                                      default=list(readings["metric"].unique())[:3])
+        room_sel = fc2.multiselect("Filter: rooms", sorted(readings["room"].unique()),
+                                    default=list(readings["room"].unique()))
+
+        filtered = readings[readings["metric"].isin(metric_sel) & readings["room"].isin(room_sel)].copy()
+        if len(filtered):
+            filtered["timestamp"] = pd.to_datetime(filtered["timestamp"], errors="coerce", utc=True)
+            filtered = filtered.dropna(subset=["timestamp"])
+            filtered["value"] = pd.to_numeric(filtered["value"], errors="coerce")
+            if len(filtered):
+                pivot = filtered.pivot_table(index="timestamp", columns="metric", values="value", aggfunc="mean")
+                section("Time Series")
+                st.line_chart(pivot)
+
+        section("Raw Readings")
+        st.dataframe(readings.sort_values("timestamp", ascending=False), use_container_width=True, hide_index=True, height=400)
+
+        dlcol1, dlcol2 = st.columns([1, 5])
+        dlcol1.download_button(
+            "⬇️ Export CSV",
+            data=readings.to_csv(index=False).encode("utf-8"),
+            file_name=f"aroya_readings_{datetime.now():%Y%m%d_%H%M}.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+        if dlcol2.button("🗑️ Clear Readings", use_container_width=False):
+            st.session_state.aroya_readings = SCHEMAS["aroya_readings"].copy()
+            st.rerun()
 
 elif page == "🥽 AR / VR Integration":
     page_header("🥽 AR / VR Integration", "cult")
