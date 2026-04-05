@@ -3,7 +3,7 @@ import pandas as pd
 import requests
 from datetime import datetime, timedelta, timezone
 
-st.set_page_config(page_title="CannaOps Management Suite", page_icon="🌿", layout="wide")
+st.set_page_config(page_title="CannaOps Management Suite", page_icon="🌿", layout="wide", initial_sidebar_state="expanded")
 
 # ─── CUSTOM STYLING ──────────────────────────────────────────────────────────
 st.markdown("""
@@ -16,8 +16,12 @@ st.markdown("""
     .stApp { background: #0a0c0f; }
     .main .block-container { padding-top: 2rem; padding-bottom: 4rem; max-width: 1400px; }
 
-    /* Hide default chrome */
-    #MainMenu, footer, header { visibility: hidden; }
+    /* Hide default chrome but keep the header bar transparent so sidebar toggle stays */
+    #MainMenu, footer { visibility: hidden; }
+    header[data-testid="stHeader"] { background: transparent; height: 0; }
+    /* Ensure sidebar expand arrow is always visible */
+    [data-testid="collapsedControl"] { display: block !important; visibility: visible !important; }
+    button[kind="header"] { visibility: visible !important; }
 
     /* Sidebar */
     [data-testid="stSidebar"] { background: #0d1014; border-right: 1px solid #1e2430; }
