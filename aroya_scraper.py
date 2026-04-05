@@ -330,21 +330,32 @@ def _scrape_dom_gauges(driver):
     return rows
 
 
-def _wait_for_dashboard_values(driver, timeout=90):
-    """Wait until at least one gauge shows a real numeric value (not '--').
-    Returns True if dashboard populated, False if timeout."""
+def _wait_for_dashboard_values(driver, timeout=180, min_populated=3):
+    """Wait until at least `min_populated` gauges show real numeric values (not '--').
+    AROYA loads dryback via XHR (fast) but soil_moist/EC/temp/RH/CO2 come from WebSocket
+    streams that take longer. Waiting for just 1 value populates too early."""
     start = time.time()
+    last_count = 0
     while time.time() - start < timeout:
         try:
-            tspans = driver.find_elements(By.CSS_SELECTOR, '[aria-label^="Data Gauge:"] svg text tspan')
-            for t in tspans[:20]:
-                txt = (t.text or "").strip()
-                if txt and txt != "--" and any(c.isdigit() for c in txt):
-                    return True
+            # Count gauges inside Data Gauge elements that have real values
+            tspans = driver.find_elements(
+                By.CSS_SELECTOR,
+                '[aria-label^="Data Gauge:"] svg text tspan'
+            )
+            populated = 0
+            for t in tspans:
+                txt = (t.text or "").strip().rstrip("%°")
+                if txt and txt != "--" and txt != "" and any(c.isdigit() for c in txt):
+                    populated += 1
+            if populated != last_count:
+                last_count = populated
+            if populated >= min_populated:
+                return populated
         except Exception:
             pass
-        time.sleep(1)
-    return False
+        time.sleep(2)
+    return last_count  # return whatever we got
 
 
 def _capture_page(driver, url, wait_secs=20, idle_secs=5, max_wait=120):
@@ -543,12 +554,13 @@ def scrape_aroya(
         post_login_snap = _snap(driver)
         all_captures = []
         dom_rows = []
+        populated_count = 0
         for url in target_urls:
             all_captures.extend(_capture_page(driver, url, wait_secs=wait_secs))
-            # After XHR capture, wait for gauges to populate, then scrape DOM values
-            populated = _wait_for_dashboard_values(driver, timeout=60)
-            if populated:
-                dom_rows.extend(_scrape_dom_gauges(driver))
+            # After XHR capture, wait up to 180s for at least 3 gauges to populate
+            populated_count = _wait_for_dashboard_values(driver, timeout=180, min_populated=3)
+            # Always scrape the DOM — even partial is useful
+            dom_rows.extend(_scrape_dom_gauges(driver))
         rows = flatten_readings(all_captures) + dom_rows
         endpoints = sorted({c["url"] for c in all_captures})
         # Take a fresh snapshot AFTER the dashboard has fully loaded
@@ -560,6 +572,7 @@ def scrape_aroya(
             "endpoints": endpoints,
             "snapshot": final_snap,
             "dom_rows_count": len(dom_rows),
+            "gauges_populated": populated_count,
         }
     finally:
         driver.quit()
