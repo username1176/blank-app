@@ -128,17 +128,97 @@ def _login(driver, user, password, login_url, user_field="email", pass_field="pa
     user_el.clear(); user_el.send_keys(user)
     pass_el.clear(); pass_el.send_keys(password)
 
-    try:
-        driver.find_element(By.CSS_SELECTOR, submit_btn).click()
-    except Exception:
-        pass_el.submit()
+    pre_url = driver.current_url
 
-    # wait up to login_timeout seconds for URL to leave /login
+    # Try many ways to submit
+    submitted = False
+    selectors_tried = []
+    button_candidates = [
+        submit_btn,
+        "button[type='submit']",
+        "form button",
+        "button.MuiButton-root",
+        "button.MuiLoadingButton-root",
+    ]
+    for sel in button_candidates:
+        try:
+            btns = driver.find_elements(By.CSS_SELECTOR, sel)
+            for b in btns:
+                if b.is_displayed() and b.is_enabled():
+                    try:
+                        b.click()
+                        submitted = True
+                        selectors_tried.append(f"click:{sel}")
+                        break
+                    except Exception:
+                        continue
+            if submitted:
+                break
+        except Exception:
+            continue
+
+    # XPath fallback: any button with login-ish text
+    if not submitted:
+        for xpath in (
+            "//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'sign in')]",
+            "//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'log in')]",
+            "//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'login')]",
+        ):
+            try:
+                b = driver.find_element(By.XPATH, xpath)
+                b.click()
+                submitted = True
+                selectors_tried.append(f"xpath:{xpath[:40]}")
+                break
+            except Exception:
+                continue
+
+    # Ultimate fallback: press Enter in password field
+    if not submitted:
+        try:
+            from selenium.webdriver.common.keys import Keys
+            pass_el.send_keys(Keys.RETURN)
+            submitted = True
+            selectors_tried.append("enter-key")
+        except Exception:
+            pass
+
+    if not submitted:
+        snap = _snap(driver)
+        err = RuntimeError(f"SUBMIT_BUTTON_NOT_FOUND | url={snap['url']}")
+        err.snapshot = snap
+        raise err
+
+    # Wait for either URL change OR login form disappearing OR error message appearing
+    def _logged_in(d):
+        try:
+            if "login" not in d.current_url.lower():
+                return True
+            # form no longer present?
+            if not d.find_elements(By.CSS_SELECTOR, "input[type='password']"):
+                return True
+        except Exception:
+            pass
+        return False
+
     try:
-        WebDriverWait(driver, login_timeout).until(lambda d: "login" not in d.current_url.lower())
+        WebDriverWait(driver, login_timeout).until(_logged_in)
     except Exception:
         snap = _snap(driver)
-        err = RuntimeError(f"LOGIN_TIMEOUT_{login_timeout}s | url={snap['url']} | title={snap['title']}")
+        # look for any visible error text on page
+        err_text = ""
+        try:
+            for el in driver.find_elements(By.CSS_SELECTOR, ".Mui-error, [role='alert'], .error, .errorMessage"):
+                if el.is_displayed() and el.text.strip():
+                    err_text += el.text.strip() + " | "
+        except Exception:
+            pass
+        err = RuntimeError(
+            f"LOGIN_TIMEOUT_{login_timeout}s | "
+            f"pre_url={pre_url} | post_url={snap['url']} | "
+            f"submit_via={','.join(selectors_tried)} | "
+            f"page_errors={err_text or 'none'}"
+        )
         err.snapshot = snap
         raise err
     return driver.current_url
