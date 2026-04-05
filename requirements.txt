@@ -1,6 +1,7 @@
 streamlit
 pandas
 requests
+setuptools
 selenium>=4.15
 selenium-wire>=5.1
 blinker<1.8
