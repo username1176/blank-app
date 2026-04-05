@@ -125,8 +125,25 @@ def _login(driver, user, password, login_url, user_field="email", pass_field="pa
             f"LOGIN_FIELDS_NOT_FOUND | url={snap['url']} | title={snap['title']}",
         ) from None
 
-    user_el.clear(); user_el.send_keys(user)
-    pass_el.clear(); pass_el.send_keys(password)
+    # React-aware fill: set value via native setter and dispatch input+change+blur events
+    # so MUI's controlled inputs register the value and enable the submit button.
+    react_fill = """
+        const el = arguments[0]; const val = arguments[1];
+        const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+        const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+        setter.call(el, val);
+        el.dispatchEvent(new Event('input',  { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        el.dispatchEvent(new Event('blur',   { bubbles: true }));
+    """
+    user_el.clear()
+    driver.execute_script(react_fill, user_el, user)
+    # also send_keys as belt-and-suspenders for any keyboard-event listeners
+    user_el.send_keys(" "); user_el.send_keys("\b")
+    pass_el.clear()
+    driver.execute_script(react_fill, pass_el, password)
+    pass_el.send_keys(" "); pass_el.send_keys("\b")
+    time.sleep(1)  # let React re-render & validate
 
     pre_url = driver.current_url
 
