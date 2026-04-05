@@ -532,14 +532,35 @@ elif page == "🌡️ AROYA Sensors":
                 else:
                     st.error(f"HTTP {code}: {payload}")
 
+    with st.expander("📁 Import from Selenium Scraper (aroya_scraper.py)", expanded=False):
+        st.caption("Run `aroya_scraper.py` locally, then upload the generated `aroya_readings_*.csv` here.")
+        uploaded = st.file_uploader("Upload scraper CSV", type=["csv"], key="aroya_csv_upload")
+        if uploaded is not None:
+            try:
+                new_df = pd.read_csv(uploaded)
+                # align to canonical schema
+                cols = ["timestamp", "facility", "room", "sensor_id", "sensor_name", "metric", "value", "unit"]
+                for c in cols:
+                    if c not in new_df.columns:
+                        new_df[c] = ""
+                existing = st.session_state.aroya_readings
+                combined = pd.concat([existing, new_df[cols]], ignore_index=True).drop_duplicates(
+                    subset=["timestamp", "sensor_id", "metric"], keep="last")
+                st.session_state.aroya_readings = combined
+                st.success(f"✓ Imported {len(new_df)} rows. Total stored: {len(combined)}")
+            except Exception as e:
+                st.error(f"Failed to parse CSV: {e}")
+
     if not st.session_state.aroya_token:
-        st.info("👆 Enter your AROYA API token above to begin capturing sensor data.")
-        st.stop()
+        st.info("👆 Enter your AROYA API token above, **or** use the Selenium scraper importer to begin capturing sensor data.")
+        # don't stop — allow viewing previously captured readings below
 
-    # ── Facility / Room Picker ──
-    section("Facilities & Rooms")
+    # ── Facility / Room Picker (API mode) ──
+    section("Facilities & Rooms (API)")
+    if not st.session_state.aroya_token:
+        st.caption("⚠ No API token set — skip this section and use the scraper importer above, or paste a token to enable.")
 
-    if st.button("🔄 Refresh Facilities"):
+    if st.button("🔄 Refresh Facilities", disabled=not st.session_state.aroya_token):
         code, payload = aroya_request(st.session_state.aroya_path_facilities)
         if code == 200:
             st.session_state["_aroya_facilities"] = _extract_list(payload)

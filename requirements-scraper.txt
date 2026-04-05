@@ -1,0 +1,4 @@
+selenium>=4.15
+selenium-wire>=5.1
+webdriver-manager>=4.0
+blinker<1.8
