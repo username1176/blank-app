@@ -212,20 +212,19 @@ def _login(driver, user, password, login_url, user_field="email", pass_field="pa
         err.snapshot = snap
         raise err
 
-    # Wait for either URL change OR login form disappearing OR error message appearing
-    def _logged_in(d):
+    # Wait for AROYA to FULLY authenticate and route to a facility page.
+    # Just the URL leaving /login isn't enough — React's route guard can bounce
+    # back to /login if you navigate before user context is hydrated. We wait
+    # until the URL contains /f/ (facility route) which signals auth is complete.
+    def _fully_routed(d):
         try:
-            if "login" not in d.current_url.lower():
-                return True
-            # form no longer present?
-            if not d.find_elements(By.CSS_SELECTOR, "input[type='password']"):
-                return True
+            url = d.current_url.lower()
+            return "/f/" in url or "/dashboard" in url.replace("/login", "")
         except Exception:
-            pass
-        return False
+            return False
 
     try:
-        WebDriverWait(driver, login_timeout).until(_logged_in)
+        WebDriverWait(driver, login_timeout).until(_fully_routed)
     except Exception:
         snap = _snap(driver)
         # look for any visible error text on page
@@ -237,13 +236,15 @@ def _login(driver, user, password, login_url, user_field="email", pass_field="pa
         except Exception:
             pass
         err = RuntimeError(
-            f"LOGIN_TIMEOUT_{login_timeout}s | "
+            f"LOGIN_ROUTING_TIMEOUT_{login_timeout}s | "
             f"pre_url={pre_url} | post_url={snap['url']} | "
             f"submit_via={','.join(selectors_tried)} | "
             f"page_errors={err_text or 'none'}"
         )
         err.snapshot = snap
         raise err
+    # extra settle time for the first dashboard render
+    time.sleep(2)
     return driver.current_url
 
 
