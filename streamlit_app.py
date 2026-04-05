@@ -532,13 +532,73 @@ elif page == "🌡️ AROYA Sensors":
                 else:
                     st.error(f"HTTP {code}: {payload}")
 
-    with st.expander("📁 Import from Selenium Scraper (aroya_scraper.py)", expanded=False):
-        st.caption("Run `aroya_scraper.py` locally, then upload the generated `aroya_readings_*.csv` here.")
+    with st.expander("🔐 Scraper Login (temporary — until API token arrives)", expanded=False):
+        st.caption("Runs a headless Chrome browser on the server, logs into AROYA, and captures sensor data. "
+                   "Store credentials in Streamlit **Secrets** (Settings → Secrets) as `aroya_user` and `aroya_pass`.")
+        default_user = ""
+        default_pass = ""
+        try:
+            default_user = st.secrets.get("aroya_user", "")
+            default_pass = st.secrets.get("aroya_pass", "")
+        except Exception:
+            pass
+
+        sc1, sc2 = st.columns(2)
+        scrape_user = sc1.text_input("AROYA Email", value=default_user, key="scrape_user")
+        scrape_pass = sc2.text_input("AROYA Password", value=default_pass, type="password", key="scrape_pass")
+
+        sc3, sc4 = st.columns(2)
+        scrape_login = sc3.text_input("Login URL", value="https://app.aroya.io/login", key="scrape_login")
+        scrape_targets = sc4.text_input("Target URLs (comma-separated)", value="https://app.aroya.io/", key="scrape_targets")
+        scrape_wait = st.slider("Wait seconds after page load (for XHRs to fire)", 5, 60, 20)
+
+        if st.button("🤖 Run Scraper Now", type="primary"):
+            if not scrape_user or not scrape_pass:
+                st.error("Enter AROYA credentials.")
+            else:
+                with st.spinner("Launching Chrome, logging in, capturing XHRs... (30–60s)"):
+                    try:
+                        from aroya_scraper import scrape_aroya
+                        result = scrape_aroya(
+                            scrape_user, scrape_pass,
+                            login_url=scrape_login,
+                            target_urls=[u.strip() for u in scrape_targets.split(",") if u.strip()],
+                            headless=True,
+                            wait_secs=scrape_wait,
+                        )
+                        st.session_state["_aroya_last_endpoints"] = result["endpoints"]
+                        st.session_state["_aroya_last_captures"] = result["captures"]
+                        if result["rows"]:
+                            new_df = pd.DataFrame(result["rows"])
+                            cols = ["timestamp", "facility", "room", "sensor_id", "sensor_name", "metric", "value", "unit"]
+                            for c in cols:
+                                if c not in new_df.columns:
+                                    new_df[c] = ""
+                            existing = st.session_state.aroya_readings
+                            combined = pd.concat([existing, new_df[cols]], ignore_index=True).drop_duplicates(
+                                subset=["timestamp", "sensor_id", "metric"], keep="last")
+                            st.session_state.aroya_readings = combined
+                            st.success(f"✓ Landed at {result['landing_url']}. Captured {len(new_df)} readings "
+                                       f"from {len(result['endpoints'])} endpoints. Total stored: {len(combined)}")
+                        else:
+                            st.warning(f"Logged in (landed at {result['landing_url']}) but no readings flattened. "
+                                       f"Hit {len(result['endpoints'])} endpoints — see below to inspect raw payloads "
+                                       f"and refine the flattener.")
+                    except Exception as e:
+                        st.error(f"Scraper failed: {type(e).__name__}: {e}")
+
+        if "_aroya_last_endpoints" in st.session_state:
+            with st.expander(f"🔍 Endpoints hit ({len(st.session_state['_aroya_last_endpoints'])})"):
+                st.code("\n".join(st.session_state["_aroya_last_endpoints"]))
+        if "_aroya_last_captures" in st.session_state:
+            with st.expander(f"🔍 Raw captured JSON ({len(st.session_state['_aroya_last_captures'])} responses)"):
+                st.json(st.session_state["_aroya_last_captures"][:5])
+
+    with st.expander("📁 Or upload CSV from local scraper run", expanded=False):
         uploaded = st.file_uploader("Upload scraper CSV", type=["csv"], key="aroya_csv_upload")
         if uploaded is not None:
             try:
                 new_df = pd.read_csv(uploaded)
-                # align to canonical schema
                 cols = ["timestamp", "facility", "room", "sensor_id", "sensor_name", "metric", "value", "unit"]
                 for c in cols:
                     if c not in new_df.columns:
