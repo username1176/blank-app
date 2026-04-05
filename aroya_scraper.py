@@ -45,6 +45,12 @@ def _build_driver(headless=True):
     opts.add_argument("--disable-gpu")
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
+    # Stealth — avoid trivial headless detection
+    opts.add_argument("--disable-blink-features=AutomationControlled")
+    opts.add_argument("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+    opts.add_experimental_option("excludeSwitches", ["enable-automation"])
+    opts.add_experimental_option("useAutomationExtension", False)
     # Streamlit Cloud ships chromium at /usr/bin/chromium, driver at /usr/bin/chromedriver
     for path in ("/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome"):
         if os.path.exists(path):
@@ -56,13 +62,21 @@ def _build_driver(headless=True):
             driver_path = path
             break
     if driver_path:
-        return webdriver.Chrome(service=Service(driver_path), options=opts)
-    # local dev fallback
+        driver = webdriver.Chrome(service=Service(driver_path), options=opts)
+    else:
+        try:
+            from webdriver_manager.chrome import ChromeDriverManager
+            driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=opts)
+        except Exception:
+            driver = webdriver.Chrome(options=opts)
+    # Hide webdriver flag
     try:
-        from webdriver_manager.chrome import ChromeDriverManager
-        return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=opts)
+        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        })
     except Exception:
-        return webdriver.Chrome(options=opts)
+        pass
+    return driver
 
 
 def _find_field(driver, selector_or_name):
@@ -83,18 +97,33 @@ def _find_field(driver, selector_or_name):
     return None
 
 
+def _snap(driver):
+    """Return base64 PNG screenshot + URL + title for debugging."""
+    try:
+        return {
+            "url": driver.current_url,
+            "title": driver.title or "",
+            "png_b64": driver.get_screenshot_as_base64(),
+            "html_preview": driver.page_source[:3000],
+        }
+    except Exception as e:
+        return {"url": "?", "title": "?", "png_b64": "", "html_preview": f"snapshot failed: {e}"}
+
+
 def _login(driver, user, password, login_url, user_field="email", pass_field="password",
-           submit_btn="button[type=submit]"):
+           submit_btn="button[type=submit]", login_timeout=90):
     driver.get(login_url)
-    WebDriverWait(driver, 20).until(lambda d: d.execute_script("return document.readyState") == "complete")
+    WebDriverWait(driver, 30).until(lambda d: d.execute_script("return document.readyState") == "complete")
+    # let JS-rendered forms mount
+    time.sleep(3)
 
     user_el = _find_field(driver, user_field)
     pass_el = _find_field(driver, pass_field)
     if not user_el or not pass_el:
+        snap = _snap(driver)
         raise RuntimeError(
-            "Could not locate login fields. Inspect the login page and adjust "
-            "user_field/pass_field. Page title: " + (driver.title or "?")
-        )
+            f"LOGIN_FIELDS_NOT_FOUND | url={snap['url']} | title={snap['title']}",
+        ) from None
 
     user_el.clear(); user_el.send_keys(user)
     pass_el.clear(); pass_el.send_keys(password)
@@ -104,7 +133,14 @@ def _login(driver, user, password, login_url, user_field="email", pass_field="pa
     except Exception:
         pass_el.submit()
 
-    WebDriverWait(driver, 25).until(lambda d: "login" not in d.current_url.lower())
+    # wait up to login_timeout seconds for URL to leave /login
+    try:
+        WebDriverWait(driver, login_timeout).until(lambda d: "login" not in d.current_url.lower())
+    except Exception:
+        snap = _snap(driver)
+        err = RuntimeError(f"LOGIN_TIMEOUT_{login_timeout}s | url={snap['url']} | title={snap['title']}")
+        err.snapshot = snap
+        raise err
     return driver.current_url
 
 
@@ -177,15 +213,24 @@ def scrape_aroya(
     target_urls=("https://app.aroya.io/",),
     headless=True,
     wait_secs=20,
+    login_timeout=90,
     user_field="email",
     pass_field="password",
     submit_btn="button[type=submit]",
 ):
-    """Run an end-to-end scrape. Returns dict with raw captures, flattened rows, endpoints, landing_url."""
+    """Run an end-to-end scrape. Returns dict with raw captures, flattened rows, endpoints, landing_url.
+    On login failure, returned dict includes `error` and `snapshot` (screenshot + HTML preview)."""
     driver = _build_driver(headless=headless)
     try:
-        landing = _login(driver, user, password, login_url,
-                         user_field=user_field, pass_field=pass_field, submit_btn=submit_btn)
+        try:
+            landing = _login(driver, user, password, login_url, login_timeout=login_timeout,
+                             user_field=user_field, pass_field=pass_field, submit_btn=submit_btn)
+        except RuntimeError as e:
+            snap = getattr(e, "snapshot", None) or _snap(driver)
+            return {"error": str(e), "snapshot": snap, "landing_url": None,
+                    "captures": [], "rows": [], "endpoints": []}
+
+        post_login_snap = _snap(driver)
         all_captures = []
         for url in target_urls:
             all_captures.extend(_capture_page(driver, url, wait_secs=wait_secs))
@@ -196,6 +241,7 @@ def scrape_aroya(
             "captures": all_captures,
             "rows": rows,
             "endpoints": endpoints,
+            "snapshot": post_login_snap,
         }
     finally:
         driver.quit()

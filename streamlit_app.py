@@ -554,13 +554,15 @@ elif page == "🌡️ AROYA Sensors":
         sc3, sc4 = st.columns(2)
         scrape_login = sc3.text_input("Login URL", value="https://app.aroya.io/login", key="scrape_login")
         scrape_targets = sc4.text_input("Target URLs (comma-separated)", value="https://app.aroya.io/", key="scrape_targets")
-        scrape_wait = st.slider("Wait seconds after page load (for XHRs to fire)", 5, 60, 20)
+        sc5, sc6 = st.columns(2)
+        scrape_wait = sc5.slider("Wait seconds after page load (for XHRs to fire)", 5, 60, 20)
+        login_timeout = sc6.slider("Login timeout (seconds)", 30, 300, 120)
 
         if st.button("🤖 Run Scraper Now", type="primary"):
             if not scrape_user or not scrape_pass:
                 st.error("Enter AROYA credentials.")
             else:
-                with st.spinner("Launching Chrome, logging in, capturing XHRs... (30–60s)"):
+                with st.spinner(f"Launching Chrome, logging in, capturing XHRs... (up to {login_timeout + scrape_wait + 30}s)"):
                     try:
                         from aroya_scraper import scrape_aroya
                         result = scrape_aroya(
@@ -569,10 +571,13 @@ elif page == "🌡️ AROYA Sensors":
                             target_urls=[u.strip() for u in scrape_targets.split(",") if u.strip()],
                             headless=True,
                             wait_secs=scrape_wait,
+                            login_timeout=login_timeout,
                         )
-                        st.session_state["_aroya_last_endpoints"] = result["endpoints"]
-                        st.session_state["_aroya_last_captures"] = result["captures"]
-                        if result["rows"]:
+                        st.session_state["_aroya_last_result"] = result
+
+                        if result.get("error"):
+                            st.error(f"Scraper failed: {result['error']}")
+                        elif result["rows"]:
                             new_df = pd.DataFrame(result["rows"])
                             cols = ["timestamp", "facility", "room", "sensor_id", "sensor_name", "metric", "value", "unit"]
                             for c in cols:
@@ -586,10 +591,28 @@ elif page == "🌡️ AROYA Sensors":
                                        f"from {len(result['endpoints'])} endpoints. Total stored: {len(combined)}")
                         else:
                             st.warning(f"Logged in (landed at {result['landing_url']}) but no readings flattened. "
-                                       f"Hit {len(result['endpoints'])} endpoints — see below to inspect raw payloads "
-                                       f"and refine the flattener.")
+                                       f"Hit {len(result['endpoints'])} endpoints — see below to inspect raw payloads.")
                     except Exception as e:
                         st.error(f"Scraper failed: {type(e).__name__}: {e}")
+
+        # Debug surface for last run
+        last = st.session_state.get("_aroya_last_result")
+        if last:
+            snap = last.get("snapshot") or {}
+            if snap.get("png_b64"):
+                with st.expander("🖼️ Browser screenshot (what Chrome saw)", expanded=bool(last.get("error"))):
+                    st.caption(f"URL: `{snap.get('url', '?')}` · Title: `{snap.get('title', '?')}`")
+                    import base64 as _b64
+                    st.image(_b64.b64decode(snap["png_b64"]))
+            if snap.get("html_preview"):
+                with st.expander("📄 Page HTML preview (first 3000 chars)"):
+                    st.code(snap["html_preview"], language="html")
+            if last.get("endpoints"):
+                with st.expander(f"🔍 Endpoints hit ({len(last['endpoints'])})"):
+                    st.code("\n".join(last["endpoints"]))
+            if last.get("captures"):
+                with st.expander(f"🔍 Raw captured JSON ({len(last['captures'])} responses, showing first 5)"):
+                    st.json(last["captures"][:5])
 
         if "_aroya_last_endpoints" in st.session_state:
             with st.expander(f"🔍 Endpoints hit ({len(st.session_state['_aroya_last_endpoints'])})"):
