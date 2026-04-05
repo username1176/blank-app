@@ -611,8 +611,30 @@ elif page == "🌡️ AROYA Sensors":
                 with st.expander(f"🔍 Endpoints hit ({len(last['endpoints'])})"):
                     st.code("\n".join(last["endpoints"]))
             if last.get("captures"):
-                with st.expander(f"🔍 Raw captured JSON ({len(last['captures'])} responses, showing first 5)"):
-                    st.json(last["captures"][:5])
+                with st.expander(f"📊 Capture stats by endpoint"):
+                    stats = {}
+                    for c in last["captures"]:
+                        u = c["url"].split("?")[0]
+                        s = stats.setdefault(u, {"count": 0, "bytes": 0})
+                        s["count"] += 1
+                        try:
+                            import json as _json
+                            s["bytes"] += len(_json.dumps(c["payload"]))
+                        except Exception:
+                            pass
+                    stats_df = pd.DataFrame([
+                        {"endpoint": k, "responses": v["count"], "bytes": v["bytes"]}
+                        for k, v in sorted(stats.items(), key=lambda x: -x[1]["bytes"])
+                    ])
+                    st.dataframe(stats_df, use_container_width=True, hide_index=True)
+                with st.expander(f"🔍 Raw captured JSON ({len(last['captures'])} responses, showing first 3)"):
+                    st.json(last["captures"][:3])
+                # raw download
+                import json as _json
+                raw_blob = _json.dumps(last["captures"], indent=2, default=str).encode("utf-8")
+                st.download_button("⬇️ Download Raw JSON", data=raw_blob,
+                                   file_name=f"aroya_raw_{datetime.now():%Y%m%d_%H%M}.json",
+                                   mime="application/json")
 
         if "_aroya_last_endpoints" in st.session_state:
             with st.expander(f"🔍 Endpoints hit ({len(st.session_state['_aroya_last_endpoints'])})"):

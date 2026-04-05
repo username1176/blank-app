@@ -34,7 +34,13 @@ METRIC_KEYS = {
     "soil_temp", "soil_moisture",
     "value",
 }
-TIMESTAMP_KEYS = ("timestamp", "time", "recorded_at", "ts", "datetime", "measured_at")
+TIMESTAMP_KEYS = ("timestamp", "time", "recorded_at", "ts", "datetime", "measured_at",
+                  "created_at", "createdAt", "recordedAt", "measuredAt", "start", "start_time",
+                  "startTime", "date", "dt")
+# fields that should never be treated as metrics
+SKIP_FIELDS = {"id", "room", "room_id", "roomId", "facility", "facility_id", "facilityId",
+               "sensor", "sensor_id", "sensorId", "device_id", "deviceId", "kiosk_id", "kioskId",
+               "user_id", "userId", "page", "count", "total", "index", "position"}
 
 
 def _build_driver(headless=True):
@@ -267,39 +273,126 @@ def _capture_page(driver, url, wait_secs=20):
     return captures
 
 
+def _is_timestamp_like(v):
+    if not isinstance(v, str) or len(v) < 8:
+        return False
+    # ISO 8601-ish: YYYY-MM-DD... or contains T and colon
+    return (v[:4].isdigit() and "-" in v[:10]) or ("T" in v and ":" in v)
+
+
+def _find_timestamp(d):
+    # exact key match first
+    for k in TIMESTAMP_KEYS:
+        if k in d and isinstance(d[k], str) and _is_timestamp_like(d[k]):
+            return d[k]
+    # fuzzy: any key containing 'time'/'date'/'at' with timestamp-like value
+    for k, v in d.items():
+        kl = k.lower()
+        if ("time" in kl or "date" in kl or kl.endswith("at")) and _is_timestamp_like(v):
+            return v
+    return None
+
+
+def _context_fields(d):
+    ctx = {}
+    for key, attr in [
+        (("facility", "facility_name", "facilityName"), "facility"),
+        (("room", "room_name", "roomName", "zone", "zone_name"), "room"),
+        (("sensor", "sensor_name", "sensorName", "name"), "sensor_name"),
+        (("sensor_id", "sensorId", "device_id", "deviceId", "kiosk_id", "kioskId", "id"), "sensor_id"),
+    ]:
+        for k in key:
+            if k in d and d[k] not in (None, "", [], {}):
+                v = d[k]
+                if isinstance(v, dict):
+                    v = v.get("name") or v.get("id") or str(v)
+                ctx[attr] = str(v)
+                break
+    return ctx
+
+
 def flatten_readings(all_captures):
+    """Walk every JSON payload recursively; for any dict with a timestamp, emit one row
+    per numeric field (excluding obvious ID/pagination fields)."""
     rows = []
-    for cap in all_captures:
-        payload = cap["payload"]
-        candidates = []
-        if isinstance(payload, list):
-            candidates.append(payload)
-        elif isinstance(payload, dict):
-            for v in payload.values():
-                if isinstance(v, list):
-                    candidates.append(v)
-        for items in candidates:
-            for item in items:
-                if not isinstance(item, dict):
+
+    def walk(node, url, ctx):
+        if isinstance(node, list):
+            for item in node:
+                walk(item, url, ctx)
+            return
+        if not isinstance(node, dict):
+            return
+
+        # refine context from this node
+        new_ctx = dict(ctx)
+        new_ctx.update(_context_fields(node))
+
+        ts = _find_timestamp(node)
+        if ts is not None:
+            for k, v in node.items():
+                if k in SKIP_FIELDS or k in TIMESTAMP_KEYS:
                     continue
-                ts = next((item[k] for k in TIMESTAMP_KEYS if k in item), None)
-                if ts is None:
+                if isinstance(v, bool) or v is None or isinstance(v, (list, dict)):
                     continue
-                for metric in METRIC_KEYS & set(item.keys()):
-                    val = item[metric]
-                    if val is None or isinstance(val, (list, dict)):
-                        continue
+                if isinstance(v, (int, float)):
                     rows.append({
                         "timestamp": ts,
-                        "facility": item.get("facility") or item.get("facility_name") or "",
-                        "room": item.get("room") or item.get("room_name") or item.get("zone") or "",
-                        "sensor_id": str(item.get("sensor_id") or item.get("id") or item.get("device_id") or ""),
-                        "sensor_name": item.get("sensor_name") or item.get("name") or item.get("type") or "",
-                        "metric": metric,
-                        "value": val,
-                        "unit": item.get("unit", ""),
-                        "source_url": cap["url"],
+                        "facility": new_ctx.get("facility", ""),
+                        "room": new_ctx.get("room", ""),
+                        "sensor_id": new_ctx.get("sensor_id", ""),
+                        "sensor_name": new_ctx.get("sensor_name", ""),
+                        "metric": k,
+                        "value": v,
+                        "unit": node.get("unit", ""),
+                        "source_url": url,
                     })
+                elif isinstance(v, str):
+                    # try to coerce numeric strings
+                    try:
+                        vf = float(v)
+                        rows.append({
+                            "timestamp": ts,
+                            "facility": new_ctx.get("facility", ""),
+                            "room": new_ctx.get("room", ""),
+                            "sensor_id": new_ctx.get("sensor_id", ""),
+                            "sensor_name": new_ctx.get("sensor_name", ""),
+                            "metric": k,
+                            "value": vf,
+                            "unit": node.get("unit", ""),
+                            "source_url": url,
+                        })
+                    except ValueError:
+                        pass
+
+        # recurse into children even if this node had a timestamp — nested time series are common
+        for v in node.values():
+            if isinstance(v, (list, dict)):
+                walk(v, url, new_ctx)
+
+    for cap in all_captures:
+        # infer facility/room from URL query params when possible
+        url_ctx = {}
+        try:
+            from urllib.parse import urlparse, parse_qs
+            qs = parse_qs(urlparse(cap["url"]).query)
+            for k in ("room", "facility", "sensor", "kiosk"):
+                if k in qs and qs[k]:
+                    url_ctx[k] = qs[k][0]
+            # path-based room/facility (e.g. /f/3766/.. or /kiosk/17627/..)
+            parts = urlparse(cap["url"]).path.strip("/").split("/")
+            for i, p in enumerate(parts):
+                if p in ("f", "facility", "facilities") and i + 1 < len(parts):
+                    url_ctx.setdefault("facility", parts[i + 1])
+                if p in ("room", "rooms") and i + 1 < len(parts):
+                    url_ctx.setdefault("room", parts[i + 1])
+                if p in ("kiosk", "kiosks") and i + 1 < len(parts):
+                    url_ctx.setdefault("sensor_id", parts[i + 1])
+        except Exception:
+            pass
+        ctx = {"facility": url_ctx.get("facility", ""), "room": url_ctx.get("room", ""),
+               "sensor_id": url_ctx.get("sensor_id", "")}
+        walk(cap["payload"], cap["url"], ctx)
     return rows
 
 
